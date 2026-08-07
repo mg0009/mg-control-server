@@ -12,6 +12,8 @@ let currentData = {
   activity: ""
 };
 
+let clearTimer = null;
+
 app.get("/", (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -78,7 +80,7 @@ app.get("/", (req, res) => {
         <textarea name="text" rows="3" placeholder="Type text to show in menu...">${currentData.text}</textarea>
 
         <label>Activity Class Name (optional)</label>
-        <input type="text" name="activity" placeholder="com.wepie.module.teenmode.TeenModeOpeningActivity" value="${currentData.activity}">
+        <input type="text" name="activity" placeholder="com.wepie.module.teenmode.TeenModeOpeningActivity" value="">
 
         <button type="submit">Send to App</button>
       </form>
@@ -95,10 +97,25 @@ app.get("/", (req, res) => {
 });
 
 app.post("/update", (req, res) => {
+  // Purana timer cancel karo
+  if (clearTimer) {
+    clearTimeout(clearTimer);
+    clearTimer = null;
+  }
+
   currentData.text = req.body.text || "No text";
   currentData.activity = req.body.activity || "";
   currentData.action = currentData.activity ? "launch" : "none";
   currentData.title = "MG Menu";
+
+  // Agar activity bheji hai to 3 second baad automatically clear kar do
+  if (currentData.action === "launch") {
+    clearTimer = setTimeout(() => {
+      currentData.action = "none";
+      currentData.activity = "";
+      console.log("Auto cleared launch command");
+    }, 3000);
+  }
 
   res.redirect("/");
 });
