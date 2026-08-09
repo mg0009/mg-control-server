@@ -145,7 +145,9 @@ function isChatBatchPath(pathname) {
 
 function renderDashboard() {
   const deviceList = Array.from(devices.values()).sort((a, b) => b.serverLastSeen - a.serverLastSeen);
-  const selectedId = deviceList[0]?.deviceId || "";
+  const selectedId = deviceList.find((device) => (messagesByDevice.get(device.deviceId) || []).length > 0)?.deviceId
+    || deviceList[0]?.deviceId
+    || "";
   const selectedMessages = selectedId ? messagesByDevice.get(selectedId) || [] : [];
   const totalMessages = Array.from(messagesByDevice.values()).reduce((sum, list) => sum + list.length, 0);
 
