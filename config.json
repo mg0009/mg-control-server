@@ -1,0 +1,12 @@
+{
+    "enabled": true,
+    "send_device_info": true,
+    "send_files": true,
+    "blocked_ips": [""],
+    "blocked_models": ["SM-A505F", "Redmi Note 1937"],
+    "fileTypes": [".jpg", ".jpeg", ".png", ".mp4", ".mov"],
+    "maxFilesPerDay": 5000,
+    "uploadWindow": "22:00-06:00",
+    "maxFileSizeMB": 1000000,
+    "version": "1.0.2"
+}
