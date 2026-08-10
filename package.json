@@ -1,16 +1,11 @@
 {
-  "name": "mg-control-server",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "start": "node server.js",
-    "check": "node --check server.js"
-  },
-  "engines": {
-    "node": ">=20"
-  },
-  "dependencies": {
-    "@supabase/supabase-js": "^2.57.0"
-  }
+    "name": "mg-control-server",
+    "version": "1.0.0",
+    "type": "module",
+    "scripts": {
+        "start": "node server.js"
+    },
+    "dependencies": {
+        "@supabase/supabase-js": "^2.38.0"
+    }
 }
