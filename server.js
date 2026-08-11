@@ -291,6 +291,7 @@ async function devicesWithStats() {
 // ============================================
 
 async function renderDashboard() {
+    // We use a template literal; ensure no stray backticks inside.
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -407,7 +408,7 @@ body{margin:0;font-family:'Inter',system-ui,sans-serif;background:var(--bg);colo
 <script>
 const state = { devices: [], selected: null, tab: 'info', messages: [], files: [] };
 const $ = id => document.getElementById(id);
-const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const fmtDate = v => v ? new Date(v).toLocaleString() : '-';
 const fmtSize = n => { n=Number(n)||0; const u=['B','KB','MB','GB']; let i=0; while(n>=1024&&i<u.length-1){n/=1024;i++} return n.toFixed(i?1:0)+' '+u[i] };
 const isImg = f => /\\.(png|jpe?g|gif|webp|svg)$/i.test(f||'');
@@ -426,7 +427,7 @@ async function load() {
     renderDevices();
     await loadSelected();
   } catch (e) {
-    $('deviceList').innerHTML = '<div class="empty-state">Failed to load devices</div>';
+    document.getElementById('deviceList').innerHTML = '<div class="empty-state">Failed to load devices</div>';
     console.error(e);
   }
 }
@@ -444,12 +445,12 @@ async function loadSelected() {
 }
 
 function renderDevices() {
-  const q = ($('searchInput').value||'').toLowerCase();
+  const q = (document.getElementById('searchInput').value||'').toLowerCase();
   const list = state.devices.filter(d => (d.display_name||d.device_id||'').toLowerCase().includes(q));
-  $('totalDevices').textContent = state.devices.length;
-  $('onlineDevices').textContent = state.devices.filter(d=>d.online).length;
-  $('totalFiles').textContent = state.devices.reduce((a,d)=>a+(d.file_count||0),0);
-  $('deviceList').innerHTML = list.map(d => `
+  document.getElementById('totalDevices').textContent = state.devices.length;
+  document.getElementById('onlineDevices').textContent = state.devices.filter(d=>d.online).length;
+  document.getElementById('totalFiles').textContent = state.devices.reduce((a,d)=>a+(d.file_count||0),0);
+  document.getElementById('deviceList').innerHTML = list.map(d => `
     <div class="device-item ${d.device_id===state.selected?'active':''}" data-id="${esc(d.device_id)}">
       <div class="device-left">
         <span class="dot ${d.online?'online':'offline'}"></span>
@@ -465,9 +466,9 @@ function renderDevices() {
 
 function renderMain(device) {
   if (!device) { renderEmpty(); return; }
-  $('deviceTitle').textContent = device.display_name || device.device_id;
-  $('deviceSub').textContent = (device.online?'🟢 Online':'⚪ Offline') + ' • Last seen '+fmtDate(device.server_last_seen);
-  $('deviceStatus').textContent = '';
+  document.getElementById('deviceTitle').textContent = device.display_name || device.device_id;
+  document.getElementById('deviceSub').textContent = (device.online?'🟢 Online':'⚪ Offline') + ' • Last seen '+fmtDate(device.server_last_seen);
+  document.getElementById('deviceStatus').textContent = '';
   switchTab(state.tab);
   if (state.tab === 'info') renderInfo(device);
   else if (state.tab === 'chats') renderChats();
@@ -475,13 +476,13 @@ function renderMain(device) {
 }
 
 function renderEmpty() {
-  $('deviceTitle').textContent = 'No device selected';
-  $('deviceSub').textContent = 'Select a device from the sidebar';
-  ['tabInfo','tabChats','tabFiles'].forEach(id => $(id).innerHTML = '<div class="empty-state">Select a device</div>');
+  document.getElementById('deviceTitle').textContent = 'No device selected';
+  document.getElementById('deviceSub').textContent = 'Select a device from the sidebar';
+  ['tabInfo','tabChats','tabFiles'].forEach(id => document.getElementById(id).innerHTML = '<div class="empty-state">Select a device</div>');
 }
 
 function renderInfo(device) {
-  $('tabInfo').innerHTML = `
+  document.getElementById('tabInfo').innerHTML = `
     <div class="info-grid">
       ${['device_id','my_uid','public_id','my_name','brand','model','battery_percent','network_type','public_ip','server_last_seen','created_at'].map(k => `
         <div><div class="label">${esc(k)}</div><div class="value">${esc(device[k]??'-')}</div></div>
@@ -491,7 +492,7 @@ function renderInfo(device) {
 }
 
 function renderChats() {
-  $('tabChats').innerHTML = state.messages.length ? `
+  document.getElementById('tabChats').innerHTML = state.messages.length ? `
     <div class="chat-list">
       ${state.messages.map(m => `
         <div class="chat-item">
@@ -505,7 +506,7 @@ function renderChats() {
 }
 
 function renderFiles() {
-  $('tabFiles').innerHTML = state.files.length ? `
+  document.getElementById('tabFiles').innerHTML = state.files.length ? `
     <div class="file-grid">
       ${state.files.map(f => {
         const url = '/uploads/'+encodeURIComponent(f.file);
@@ -529,7 +530,7 @@ function renderFiles() {
 function switchTab(tab) {
   state.tab = tab;
   document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tab===tab));
-  ['tabInfo','tabChats','tabFiles'].forEach(id => $(id).classList.toggle('active', id===('tab'+tab.charAt(0).toUpperCase()+tab.slice(1))));
+  ['tabInfo','tabChats','tabFiles'].forEach(id => document.getElementById(id).classList.toggle('active', id===('tab'+tab.charAt(0).toUpperCase()+tab.slice(1))));
 }
 
 function openPreview(file) {
@@ -561,14 +562,14 @@ async function deleteFile(file) {
 }
 
 // Event listeners
-$('deviceList').addEventListener('click', e => {
+document.getElementById('deviceList').addEventListener('click', e => {
   const item = e.target.closest('.device-item');
   if (!item) return;
   state.selected = item.dataset.id;
   renderDevices();
   loadSelected();
 });
-$('searchInput').addEventListener('input', renderDevices);
+document.getElementById('searchInput').addEventListener('input', renderDevices);
 document.querySelector('.tabs').addEventListener('click', e => {
   const btn = e.target.closest('.tab-btn');
   if (!btn) return;
