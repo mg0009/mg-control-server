@@ -145,7 +145,7 @@ function isVideo(fileName) { return getFileType(fileName) === "video"; }
 // ============================================
 // DASHBOARD RENDERER (Enhanced with file support)
 // ============================================
-async function renderDashboard() {
+async function renderDashboard(selectedDeviceId) {
   const { data: deviceListData, error: deviceError } = await supabase
     .from("devices")
     .select("*")
@@ -179,10 +179,13 @@ async function renderDashboard() {
     fileCounts[file.device_id]++;
   }
 
-  // get the first device with messages, else first device
-  const selectedId = deviceList.find(device =>
-    allMessages.some(msg => msg.device_id === device.device_id)
-  )?.device_id || deviceList[0]?.device_id || "";
+  // determine selected device (from query param, or first with messages, or first overall)
+  let selectedId = selectedDeviceId;
+  if (!selectedId || !deviceList.some(d => d.device_id === selectedId)) {
+    selectedId = deviceList.find(device =>
+      allMessages.some(msg => msg.device_id === device.device_id)
+    )?.device_id || deviceList[0]?.device_id || "";
+  }
 
   const selectedMessages = selectedId
     ? allMessages.filter(msg => msg.device_id === selectedId)
@@ -359,7 +362,7 @@ async function renderDashboard() {
 </div>
 
 <script>
-  // Device click
+  // Device click – updates URL and reloads
   document.querySelectorAll('.device').forEach(el => {
     el.addEventListener('click', function() {
       const id = this.dataset.id;
@@ -449,10 +452,11 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
     // ============================================
-    // DASHBOARD
+    // DASHBOARD – read device query param
     // ============================================
     if (req.method === "GET" && url.pathname === "/") {
-      return html(res, await renderDashboard());
+      const selectedDevice = url.searchParams.get("device") || "";
+      return html(res, await renderDashboard(selectedDevice));
     }
 
     // ============================================
