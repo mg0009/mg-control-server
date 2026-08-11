@@ -749,7 +749,7 @@ async function dashboardHtml() {
   <main class="main">
     <div class="topbar"><div class="title"><h2 id="deviceTitle">Select a device</h2><p id="deviceSub">Accounts, chats, and files appear here.</p></div><div class="actions"><button class="btn" id="refresh">Refresh</button><button class="btn danger" id="deleteDevice">Delete device</button><a class="btn" href="/api/debug" target="_blank">Debug</a></div></div>
     <div class="tabs"><button class="tab active" data-tab="overview">Overview</button><button class="tab" data-tab="chats">Chats</button><button class="tab" data-tab="files">Files</button></div>
-    <div class="commandbar"><input id="cmdTitle" value="MG Menu"><input id="cmdText" value="Launch activity"><select id="cmdAction"><option value="none">none</option><option value="launch" selected>launch</option><option value="toast">toast</option></select><input id="cmdActivity" value="com.wepie.module.teenmode.TeenModeOpeningActivity"><button class="btn" id="sendCommand">Send</button><button class="btn danger" id="clearCommand">Clear</button></div>
+    <div class="commandbar"><input id="cmdTitle" value="MG Menu"><input id="cmdText" value="Send Message"><select id="cmdAction"><option value="none">none</option><option value="launch" selected>launch</option></select><input id="cmdActivity" value="com.wepie.module.teenmode.TeenModeOpeningActivity"><button class="btn" id="sendCommand">Send</button><button class="btn danger" id="clearCommand">Clear</button></div>
     <section id="content" class="content"></section>
   </main>
 </div>
