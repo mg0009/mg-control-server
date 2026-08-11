@@ -1,9 +1,25 @@
 {
+  "name": "mg-menu-server",
+  "version": "1.0.0",
   "type": "module",
+  "description": "MG Dashboard server with Supabase, file uploads, and device management",
+  "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.45.4"
-  }
+    "@supabase/supabase-js": "^2.38.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "supabase",
+    "dashboard",
+    "file-upload",
+    "device-tracking"
+  ],
+  "author": "",
+  "license": "ISC"
 }
