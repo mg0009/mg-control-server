@@ -15,6 +15,14 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SEC
   auth: { persistSession: false }
 });
 
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection:", reason);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception:", error);
+});
+
 const UPLOAD_DIR = path.join(process.cwd(), "uploads");
 const THUMB_DIR = path.join(process.cwd(), "thumbs");
 const LOG_FILE = path.join(process.cwd(), "logs.json");
@@ -521,10 +529,10 @@ async function handler(req, res) {
   try {
     if (req.method === "GET" && url.pathname === "/") return text(res, 200, await dashboardHtml(), "text/html; charset=utf-8");
     if (req.method === "GET" && url.pathname === "/config") return text(res, 200, readConfigFlag());
-    if (req.method === "POST" && url.pathname === "/api/heartbeat") return handleHeartbeat(req, res);
-    if (req.method === "POST" && url.pathname === "/api/chat/batch") return handleChatBatch(req, res);
-    if (req.method === "POST" && url.pathname === "/track") return handleTrack(req, res);
-    if (req.method === "POST" && url.pathname === "/upload") return handleUpload(req, res, url);
+    if (req.method === "POST" && url.pathname === "/api/heartbeat") return await handleHeartbeat(req, res);
+    if (req.method === "POST" && url.pathname === "/api/chat/batch") return await handleChatBatch(req, res);
+    if (req.method === "POST" && url.pathname === "/track") return await handleTrack(req, res);
+    if (req.method === "POST" && url.pathname === "/upload") return await handleUpload(req, res, url);
 
     if (req.method === "GET" && url.pathname === "/api/files") {
       const deviceId = clean(url.searchParams.get("device_id") || url.searchParams.get("id"));
