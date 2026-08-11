@@ -1,6 +1,6 @@
 {
   "enabled": true,
   "fileTypes": [".jpg", ".jpeg", ".png", ".mp4", ".mov"],
-  "maxFileSizeMb": 10000,
+  "maxFileSizeMb": 100,
   "value": "1"
 }
