@@ -162,6 +162,7 @@ function removeFileLogEntries(fileName) {
     } catch {}
 }
 
+// ✅ CORRECT ORDER: jsonResponse(res, payload, status)
 function jsonResponse(res, payload, status = 200) {
     const body = JSON.stringify(payload);
     res.writeHead(status, {
@@ -196,6 +197,10 @@ async function readBody(req) {
         return Object.fromEntries(new URLSearchParams(raw));
     }
     try { return JSON.parse(raw); } catch { return {}; }
+}
+
+function notFound(res) {
+    jsonResponse(res, { ok: false, error: "Not found" }, 404);
 }
 
 function isHeartbeatPath(pathname) {
@@ -287,11 +292,11 @@ async function devicesWithStats() {
 }
 
 // ============================================
-// ADVANCED DASHBOARD HTML (with escaped backticks)
+// ADVANCED DASHBOARD HTML
 // ============================================
 
 async function renderDashboard() {
-    const html = `<!DOCTYPE html>
+    return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -583,8 +588,6 @@ load();
 </script>
 </body>
 </html>`;
-
-    return html;
 }
 
 // ============================================
@@ -843,7 +846,7 @@ const server = http.createServer(async (req, res) => {
         // ============================================
         if (req.method === "GET" && url.pathname === "/api/devices") {
             const devices = await devicesWithStats();
-            return jsonResponse(res, 200, devices);
+            return jsonResponse(res, devices, 200);
         }
 
         // ============================================
@@ -853,8 +856,8 @@ const server = http.createServer(async (req, res) => {
             const deviceId = url.pathname.split("/").pop();
             const devices = await devicesWithStats();
             const device = devices.find(d => d.device_id === deviceId);
-            if (!device) return jsonResponse(res, 404, { ok: false, error: "Device not found" });
-            return jsonResponse(res, 200, device);
+            if (!device) return notFound(res);
+            return jsonResponse(res, device, 200);
         }
 
         // ============================================
@@ -864,7 +867,7 @@ const server = http.createServer(async (req, res) => {
             const parts = url.pathname.split("/");
             const deviceId = parts[parts.length - 2];
             const messages = await getMessages(deviceId);
-            return jsonResponse(res, 200, messages);
+            return jsonResponse(res, messages, 200);
         }
 
         // ============================================
@@ -874,7 +877,7 @@ const server = http.createServer(async (req, res) => {
             const parts = url.pathname.split("/");
             const deviceId = parts[parts.length - 2];
             const files = getFiles(deviceId);
-            return jsonResponse(res, 200, files);
+            return jsonResponse(res, files, 200);
         }
 
         // ============================================
@@ -957,7 +960,7 @@ const server = http.createServer(async (req, res) => {
             });
         }
 
-        return jsonResponse(res, { ok: false, error: "not found" }, 404);
+        return notFound(res);
 
     } catch (error) {
         console.error(error);
