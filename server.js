@@ -59,8 +59,17 @@ function optionalNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function optionalClean(value) {
+  const s = clean(value);
+  return s ? s : null;
+}
+
 function nowIso() {
   return new Date().toISOString();
+}
+
+function nowMillis() {
+  return Date.now();
 }
 
 function safeDecode(value) {
@@ -247,7 +256,8 @@ function getFiles(deviceId = "") {
 }
 
 function isOnline(device) {
-  const t = Date.parse(device.server_last_seen || "");
+  const raw = device.server_last_seen;
+  const t = typeof raw === "number" || /^\d+$/.test(String(raw || "")) ? Number(raw) : Date.parse(raw || "");
   return Number.isFinite(t) && Date.now() - t < 60_000;
 }
 
@@ -276,15 +286,15 @@ async function handleHeartbeat(req, res) {
 
   const row = {
     device_id,
-    my_uid: clean(body.my_uid ?? body.myUid),
-    public_id: clean(body.public_id ?? body.publicId),
-    my_name: clean(body.my_name ?? body.myName ?? body.name),
-    model: clean(body.model),
-    brand: clean(body.brand),
+    my_uid: optionalNumber(body.my_uid ?? body.myUid),
+    public_id: optionalClean(body.public_id ?? body.publicId),
+    my_name: optionalClean(body.my_name ?? body.myName ?? body.name),
+    model: optionalClean(body.model),
+    brand: optionalClean(body.brand),
     battery_percent: optionalNumber(body.battery_percent ?? body.battery),
-    network_type: clean(body.network_type || body.network),
-    public_ip: publicIp(req),
-    server_last_seen: nowIso()
+    network_type: optionalClean(body.network_type || body.network),
+    public_ip: optionalClean(publicIp(req)),
+    server_last_seen: optionalNumber(body.lastSeen) || nowMillis()
   };
 
   const { error } = await supabase.from("devices").upsert(row, { onConflict: "device_id" });
@@ -316,10 +326,10 @@ async function handleChatBatch(req, res) {
   if (batchDeviceId) {
     await supabase.from("devices").upsert({
       device_id: batchDeviceId,
-      my_uid: clean(batchMyUid),
-      public_id: clean(body.public_id ?? body.publicId),
-      public_ip: publicIp(req),
-      server_last_seen: nowIso()
+      my_uid: optionalNumber(batchMyUid),
+      public_id: optionalClean(body.public_id ?? body.publicId),
+      public_ip: optionalClean(publicIp(req)),
+      server_last_seen: nowMillis()
     }, { onConflict: "device_id" });
   }
   json(res, 200, { ok: true, saved: rows.length });
@@ -368,7 +378,7 @@ async function handleTrack(req, res) {
     battery_percent: optionalNumber(body.battery),
     network_type: clean(body.network_type || body.network),
     public_ip: publicIp(req),
-    server_last_seen: nowIso()
+    server_last_seen: nowMillis()
   }, { onConflict: "device_id" });
   if (error) throw error;
 
@@ -462,7 +472,7 @@ button,input,select{font:inherit}button{border:0;cursor:pointer}.app{display:gri
 <script>
 const state={devices:[],selected:null,tab:"info",messages:[],files:[]};
 const $=id=>document.getElementById(id);
-const fmtDate=v=>v?new Date(v).toLocaleString():"";
+const fmtDate=v=>{if(!v)return "";const d=/^\\d+$/.test(String(v))?new Date(Number(v)):new Date(v);return Number.isFinite(d.getTime())?d.toLocaleString():String(v)};
 const fmtBytes=n=>{n=Number(n)||0;const u=["B","KB","MB","GB"];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return n.toFixed(i?1:0)+" "+u[i]};
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const isImg=f=>/\\.(png|jpe?g|gif|webp|svg)$/i.test(f||"");
