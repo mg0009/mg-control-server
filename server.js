@@ -249,6 +249,19 @@ async function getMessages(deviceId = "") {
   return data || [];
 }
 
+async function getMessagesForDeviceIds(deviceIds = []) {
+  const ids = [...new Set(deviceIds.filter(Boolean))];
+  if (!ids.length) return [];
+  const { data, error } = await supabase
+    .from("messages")
+    .select("*")
+    .in("device_id", ids)
+    .order("received_at", { ascending: false })
+    .limit(1000);
+  if (error) throw error;
+  return data || [];
+}
+
 function getFiles(deviceId = "") {
   return readLogs()
     .filter((item) => item && item.type === "file")
@@ -259,6 +272,21 @@ function isOnline(device) {
   const raw = device.server_last_seen;
   const t = typeof raw === "number" || /^\d+$/.test(String(raw || "")) ? Number(raw) : Date.parse(raw || "");
   return Number.isFinite(t) && Date.now() - t < 60_000;
+}
+
+function findLinkedDeviceIds(devices, deviceId) {
+  const device = devices.find((item) => item.device_id === deviceId);
+  if (!device) return [deviceId];
+  return devices
+    .filter((candidate) =>
+      candidate.device_id === device.device_id ||
+      (
+        candidate.public_ip === device.public_ip &&
+        (!device.model || !candidate.model || candidate.model === device.model) &&
+        (!device.brand || !candidate.brand || candidate.brand === device.brand)
+      )
+    )
+    .map((candidate) => candidate.device_id);
 }
 
 async function devicesWithStats() {
@@ -291,7 +319,7 @@ async function devicesWithStats() {
       ...merged,
     online: isOnline(device),
       display_name: merged.my_name || merged.public_id || merged.device_id,
-    message_count: msgCounts.get(device.device_id) || 0,
+    message_count: findLinkedDeviceIds(devices, device.device_id).reduce((sum, id) => sum + (msgCounts.get(id) || 0), 0),
     file_count: fileCounts.get(device.device_id) || 0
     };
   });
@@ -314,6 +342,9 @@ async function handleHeartbeat(req, res) {
     public_ip: optionalClean(publicIp(req)),
     server_last_seen: optionalNumber(body.lastSeen) || nowMillis()
   };
+  for (const key of Object.keys(row)) {
+    if (row[key] == null) delete row[key];
+  }
 
   const { error } = await supabase.from("devices").upsert(row, { onConflict: "device_id" });
   if (error) throw error;
@@ -339,18 +370,40 @@ async function handleChatBatch(req, res) {
   })).filter((msg) => msg.device_id);
 
   if (!rows.length) return json(res, 400, { ok: false, error: "valid device_id is required" });
-  const { error } = await supabase.from("messages").insert(rows);
-  if (error) throw error;
+  let saved = rows.length;
+  let skipped = 0;
+  const { error } = await supabase
+    .from("messages")
+    .upsert(rows, { onConflict: "device_id,mid", ignoreDuplicates: true });
+  if (error) {
+    if (error.code !== "23505") throw error;
+    saved = 0;
+    skipped = 0;
+    for (const row of rows) {
+      const { error: rowError } = await supabase.from("messages").insert(row);
+      if (!rowError) {
+        saved += 1;
+      } else if (rowError.code === "23505") {
+        skipped += 1;
+      } else {
+        throw rowError;
+      }
+    }
+  }
   if (batchDeviceId) {
-    await supabase.from("devices").upsert({
+    const batchDevice = {
       device_id: batchDeviceId,
       my_uid: optionalNumber(batchMyUid),
       public_id: optionalClean(body.public_id ?? body.publicId),
       public_ip: optionalClean(publicIp(req)),
       server_last_seen: nowMillis()
-    }, { onConflict: "device_id" });
+    };
+    for (const key of Object.keys(batchDevice)) {
+      if (batchDevice[key] == null) delete batchDevice[key];
+    }
+    await supabase.from("devices").upsert(batchDevice, { onConflict: "device_id" });
   }
-  json(res, 200, { ok: true, saved: rows.length });
+  json(res, 200, { ok: true, saved, skipped });
 }
 
 function fileNameFromHeaders(req, url) {
@@ -534,7 +587,10 @@ async function handleDashboardApi(req, res, url) {
       const device = devices.find((item) => item.device_id === deviceId);
       return device ? json(res, 200, device) : notFound(res);
     }
-    if (parts[3] === "messages") return json(res, 200, await getMessages(deviceId));
+    if (parts[3] === "messages") {
+      const devices = await getDevices();
+      return json(res, 200, await getMessagesForDeviceIds(findLinkedDeviceIds(devices, deviceId)));
+    }
     if (parts[3] === "files") return json(res, 200, getFiles(deviceId));
     if (parts[3] === "tracks") return json(res, 200, readTracks().filter((item) => item.device_id === deviceId));
   }
