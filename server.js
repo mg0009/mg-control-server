@@ -313,11 +313,11 @@ async function handleChatBatch(req, res) {
     device_id: clean(msg.device_id || msg.deviceId || batchDeviceId),
     mid: clean(msg.mid || msg.id),
     direction: clean(msg.direction),
-    peer_uid: clean(msg.peer_uid ?? msg.peerUid),
+    peer_uid: optionalNumber(msg.peer_uid ?? msg.peerUid),
     peer_name: clean(msg.peer_name ?? msg.peerName),
     text: clean(msg.text || msg.message),
-    message_time: clean(msg.message_time ?? msg.messageTime ?? msg.time),
-    received_at: nowIso()
+    message_time: optionalNumber(msg.message_time ?? msg.messageTime ?? msg.time) || nowMillis(),
+    received_at: nowMillis()
   })).filter((msg) => msg.device_id);
 
   if (!rows.length) return json(res, 400, { ok: false, error: "valid device_id is required" });
