@@ -30,6 +30,10 @@ let command = {
   activity: ""
 };
 
+// ============================================================
+// HELPERS
+// ============================================================
+
 function publicIp(req) {
   const forwarded = req.headers["x-forwarded-for"];
   if (typeof forwarded === "string" && forwarded.trim()) return forwarded.split(",")[0].trim();
@@ -191,6 +195,10 @@ function readConfigFlag() {
   }
 }
 
+// ============================================================
+// DATABASE HELPERS
+// ============================================================
+
 async function getDevices() {
   const { data, error } = await supabase
     .from("devices")
@@ -237,6 +245,10 @@ async function devicesWithStats() {
   }));
 }
 
+// ============================================================
+// ENDPOINT HANDLERS
+// ============================================================
+
 async function handleHeartbeat(req, res) {
   const body = await readJson(req);
   const device_id = clean(body.device_id || body.id || body.my_uid || body.public_id);
@@ -272,7 +284,7 @@ async function handleChatBatch(req, res) {
     peer_uid: clean(msg.peer_uid),
     peer_name: clean(msg.peer_name),
     text: clean(msg.text || msg.message),
-    message_time: clean(msg.message_time || msg.time),
+    message_time: clean(msg.message_time || msg.time || nowIso()),
     received_at: nowIso()
   })).filter((msg) => msg.device_id);
 
@@ -342,6 +354,10 @@ function handleDeleteFile(res, rawName) {
   json(res, 200, { ok: true, deleted: name });
 }
 
+// ============================================================
+// DASHBOARD HTML
+// ============================================================
+
 async function dashboardHtml() {
   return `<!doctype html>
 <html lang="en">
@@ -400,6 +416,10 @@ load().catch(err=>{$("content").innerHTML='<div class="empty">Failed to load das
 </html>`;
 }
 
+// ============================================================
+// DASHBOARD API ROUTES
+// ============================================================
+
 async function handleDashboardApi(req, res, url) {
   const parts = url.pathname.split("/").filter(Boolean).map(safeDecode);
 
@@ -420,6 +440,10 @@ async function handleDashboardApi(req, res, url) {
 
   return false;
 }
+
+// ============================================================
+// MAIN HTTP HANDLER
+// ============================================================
 
 async function handler(req, res) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -477,6 +501,10 @@ async function handler(req, res) {
     return json(res, 500, { ok: false, error: error.message || "Internal server error" });
   }
 }
+
+// ============================================================
+// START SERVER
+// ============================================================
 
 http.createServer(handler).listen(PORT, () => {
   console.log(`MG Menu server running on port ${PORT}`);
