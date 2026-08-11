@@ -4,7 +4,10 @@ import { createClient } from "@supabase/supabase-js";
 import fs from "fs";
 import path from "path";
 
-const port = Number(process.env.PORT || 3000);
+// ============================================
+// ✅ PORT - GLOBAL SCOPE PE DEFINE KARO
+// ============================================
+const PORT = process.env.PORT || 3000;
 
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SECRET_KEY) {
     console.error("Missing SUPABASE_URL or SUPABASE_SECRET_KEY");
@@ -874,16 +877,16 @@ const server = http.createServer(async (req, res) => {
 });
 
 // ============================================
-// START SERVER
+// ✅ START SERVER - PORT GLOBAL SCOPE SE USE HOGA
 // ============================================
 
-server.listen(port, () => {
+server.listen(PORT, () => {
     const cfg = loadConfig();
     console.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
 ║   🚀 MG CONTROL SERVER                                      ║
-║   📡 Running on: http://localhost:${port}                     ║
+║   📡 Running on: http://localhost:${PORT}                     ║
 ║   🌐 Public URL: https://mg-control-server.onrender.com     ║
 ║                                                              ║
 ╠══════════════════════════════════════════════════════════════╣
