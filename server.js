@@ -393,29 +393,26 @@ function isOnline(device) {
   return Number.isFinite(t) && Date.now() - t < 60_000;
 }
 
-async function dashboardData() {
-  const [devices, messages] = await Promise.all([getDevices(), getMessages()]);
-  const files = getFiles();
-  const accounts = readAccounts();
-  const meta = readMessageMeta();
-  const tracks = readTracks();
+async function accountSummary(deviceId) {
+  // Pehle Supabase se devices aur messages dono le lo (jaise dashboardData mein liya hai)
+  const [messages, devices] = await Promise.all([getMessages(deviceId), getDevices()]);
+  const device = devices.find(d => d.device_id === deviceId);
+  
+  // Local file se accounts toh dekho
+  let accounts = readAccounts().filter((item) => item.device_id === deviceId);
+  
+  // 🟢 YEH FALLBACK WALI LINES DAALO (bilkul waise hi jaise dashboardData mein hai)
+  if (!accounts.length && (device?.my_uid || device?.public_id || device?.my_name)) {
+    accounts.push({
+      key: accountKey(device.device_id, device),
+      device_id: device.device_id,
+      my_uid: device.my_uid,
+      public_id: device.public_id,
+      my_name: device.my_name,
+      last_seen: device.server_last_seen
+    });
+  }
 
-  const msgCounts = new Map();
-  const fileCounts = new Map();
-  for (const msg of messages) msgCounts.set(msg.device_id, (msgCounts.get(msg.device_id) || 0) + 1);
-  for (const file of files) fileCounts.set(file.device_id, (fileCounts.get(file.device_id) || 0) + 1);
-
-  return devices.map((device) => {
-    const deviceAccounts = accounts.filter((account) => account.device_id === device.device_id);
-    if (!deviceAccounts.length && (device.my_uid || device.public_id || device.my_name)) {
-      deviceAccounts.push({
-        key: accountKey(device.device_id, device),
-        device_id: device.device_id,
-        my_uid: device.my_uid,
-        public_id: device.public_id,
-        my_name: device.my_name,
-        last_seen: device.server_last_seen
-      });
     }
     const displayAccount = [...deviceAccounts].sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0))[0];
     const latestTrack = tracks.find((track) => track.device_id === device.device_id);
