@@ -433,19 +433,6 @@ async function accountSummary(deviceId) {
   // 6. Sorted list return karo (last_seen ke hisaab se latest pehle)
   return [...byAccount.values()].sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0));
 }
-      ...device,
-      online: isOnline(device),
-      display_name: displayAccount?.my_name || displayAccount?.public_id || device.my_name || device.public_id || device.device_id,
-      account_count: deviceAccounts.length,
-      message_count: msgCounts.get(device.device_id) || 0,
-      file_count: fileCounts.get(device.device_id) || 0,
-      tracked_message_count: meta.filter((item) => item.device_id === device.device_id).length,
-      android: latestTrack?.android || null,
-      app_count: latestTrack?.app_count || 0,
-      last_track_time: latestTrack?.time || null
-    };
-  });
-}
 
 async function accountSummary(deviceId) {
   const [messages] = await Promise.all([getMessages(deviceId)]);
