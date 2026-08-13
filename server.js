@@ -393,15 +393,52 @@ function isOnline(device) {
   return Number.isFinite(t) && Date.now() - t < 60_000;
 }
 
+async function dashboardData() {
+  const [devices, messages] = await Promise.all([getDevices(), getMessages()]);
+  const files = getFiles();
+  const accounts = readAccounts();
+  const meta = readMessageMeta();
+  const tracks = readTracks();
+
+  const msgCounts = new Map();
+  const fileCounts = new Map();
+  for (const msg of messages) msgCounts.set(msg.device_id, (msgCounts.get(msg.device_id) || 0) + 1);
+  for (const file of files) fileCounts.set(file.device_id, (fileCounts.get(file.device_id) || 0) + 1);
+
+  return devices.map((device) => {
+    const deviceAccounts = accounts.filter((account) => account.device_id === device.device_id);
+    if (!deviceAccounts.length && (device.my_uid || device.public_id || device.my_name)) {
+      deviceAccounts.push({
+        key: accountKey(device.device_id, device),
+        device_id: device.device_id,
+        my_uid: device.my_uid,
+        public_id: device.public_id,
+        my_name: device.my_name,
+        last_seen: device.server_last_seen
+      });
+    }
+    const displayAccount = [...deviceAccounts].sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0))[0];
+    const latestTrack = tracks.find((track) => track.device_id === device.device_id);
+    return {
+      ...device,
+      online: isOnline(device),
+      display_name: displayAccount?.my_name || displayAccount?.public_id || device.my_name || device.public_id || device.device_id,
+      account_count: deviceAccounts.length,
+      message_count: msgCounts.get(device.device_id) || 0,
+      file_count: fileCounts.get(device.device_id) || 0,
+      tracked_message_count: meta.filter((item) => item.device_id === device.device_id).length,
+      android: latestTrack?.android || null,
+      app_count: latestTrack?.app_count || 0,
+      last_track_time: latestTrack?.time || null
+    };
+  });
+}
+
+// ✅ SIRF EK accountSummary function – isme fallback hai
 async function accountSummary(deviceId) {
-  // 1. Supabase se messages aur devices dono fetch karo
   const [messages, devices] = await Promise.all([getMessages(deviceId), getDevices()]);
   const device = devices.find(d => d.device_id === deviceId);
-  
-  // 2. Local file se accounts lo
   let accounts = readAccounts().filter((item) => item.device_id === deviceId);
-  
-  // 3. 🟢 FALLBACK: Agar local file khali hai, toh Supabase se naam/UID le lo
   if (!accounts.length && (device?.my_uid || device?.public_id || device?.my_name)) {
     accounts.push({
       key: accountKey(device.device_id, device),
@@ -412,31 +449,6 @@ async function accountSummary(deviceId) {
       last_seen: device.server_last_seen
     });
   }
-
-  // 4. Agar ab bhi accounts khali hain, toh default account bana do
-  const finalAccounts = accounts.length ? accounts : [defaultAccount(deviceId)];
-  
-  // 5. Har account ke liye message_count aur file_count count karo
-  const files = getFiles(deviceId);
-  const meta = readMessageMeta();
-  const byAccount = new Map(finalAccounts.map((account) => [account.key, { ...account, message_count: 0, file_count: 0 }]));
-
-  for (const msg of messages) {
-    const key = meta.find((item) => item.device_id === msg.device_id && item.mid === msg.mid)?.account_key || accountForMessage(msg, finalAccounts);
-    if (key && byAccount.has(key)) byAccount.get(key).message_count += 1;
-  }
-  for (const file of files) {
-    const key = file.account_key || fallbackAccountKey(deviceId, finalAccounts);
-    if (key && byAccount.has(key)) byAccount.get(key).file_count += 1;
-  }
-  
-  // 6. Sorted list return karo (last_seen ke hisaab se latest pehle)
-  return [...byAccount.values()].sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0));
-}
-
-async function accountSummary(deviceId) {
-  const [messages] = await Promise.all([getMessages(deviceId)]);
-  const accounts = readAccounts().filter((item) => item.device_id === deviceId);
   const finalAccounts = accounts.length ? accounts : [defaultAccount(deviceId)];
   const files = getFiles(deviceId);
   const meta = readMessageMeta();
