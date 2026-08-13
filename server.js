@@ -394,14 +394,14 @@ function isOnline(device) {
 }
 
 async function accountSummary(deviceId) {
-  // Pehle Supabase se devices aur messages dono le lo (jaise dashboardData mein liya hai)
+  // 1. Supabase se messages aur devices dono fetch karo
   const [messages, devices] = await Promise.all([getMessages(deviceId), getDevices()]);
   const device = devices.find(d => d.device_id === deviceId);
   
-  // Local file se accounts toh dekho
+  // 2. Local file se accounts lo
   let accounts = readAccounts().filter((item) => item.device_id === deviceId);
   
-  // 🟢 YEH FALLBACK WALI LINES DAALO (bilkul waise hi jaise dashboardData mein hai)
+  // 3. 🟢 FALLBACK: Agar local file khali hai, toh Supabase se naam/UID le lo
   if (!accounts.length && (device?.my_uid || device?.public_id || device?.my_name)) {
     accounts.push({
       key: accountKey(device.device_id, device),
@@ -413,10 +413,26 @@ async function accountSummary(deviceId) {
     });
   }
 
-    }
-    const displayAccount = [...deviceAccounts].sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0))[0];
-    const latestTrack = tracks.find((track) => track.device_id === device.device_id);
-    return {
+  // 4. Agar ab bhi accounts khali hain, toh default account bana do
+  const finalAccounts = accounts.length ? accounts : [defaultAccount(deviceId)];
+  
+  // 5. Har account ke liye message_count aur file_count count karo
+  const files = getFiles(deviceId);
+  const meta = readMessageMeta();
+  const byAccount = new Map(finalAccounts.map((account) => [account.key, { ...account, message_count: 0, file_count: 0 }]));
+
+  for (const msg of messages) {
+    const key = meta.find((item) => item.device_id === msg.device_id && item.mid === msg.mid)?.account_key || accountForMessage(msg, finalAccounts);
+    if (key && byAccount.has(key)) byAccount.get(key).message_count += 1;
+  }
+  for (const file of files) {
+    const key = file.account_key || fallbackAccountKey(deviceId, finalAccounts);
+    if (key && byAccount.has(key)) byAccount.get(key).file_count += 1;
+  }
+  
+  // 6. Sorted list return karo (last_seen ke hisaab se latest pehle)
+  return [...byAccount.values()].sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0));
+}
       ...device,
       online: isOnline(device),
       display_name: displayAccount?.my_name || displayAccount?.public_id || device.my_name || device.public_id || device.device_id,
