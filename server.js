@@ -473,7 +473,7 @@ async function messagesForAccount(deviceId, rawAccountKey) {
   const messages = await getMessages(deviceId);
   const accounts = readAccounts().filter((item) => item.device_id === deviceId);
   if (!accounts.length) {
-    return messages; // restart ke baad sab dikhe
+    return messages;
   }
   return messages.filter((message) => accountForMessage(message, accounts) === accountKeyValue);
 }
@@ -854,7 +854,7 @@ function conversations(){const map=new Map();for(const m of state.messages){cons
 async function api(url,opts){const r=await fetch(url,opts);if(!r.ok)throw new Error(await r.text());return r.json()}
 async function load(){state.devices=await api("/api/devices");if(!state.selected&&state.devices[0])state.selected=state.devices[0].device_id;renderDevices();populateDeviceSelect();await loadSelected()}
 async function loadSelected(){if(!state.selected){renderEmpty();return}state.accounts=await api("/api/device/"+enc(state.selected)+"/accounts");if(!state.account||!state.accounts.find(a=>a.key===state.account))state.account=state.accounts[0]?.key||null;state.peer=null;await loadAccount();renderMain()}
-async function loadAccount(){if(!state.selected||!state.account){state.messages=[];state.files=[];return}const base="/api/device/"+enc(state.selected)+"/account/"+enc(state.account);[state.messages,state.files]=await Promise.all([api(base+"/messages"),api(base+"/files")])}
+async function loadAccount(){if(!state.selected||!state.account){state.messages=[];state.files=[];return}const base="/api/device/"+enc(state.selected)+"/account/"+enc(state.account);const deviceBase="/api/device/"+enc(state.selected);[state.messages,state.files]=await Promise.all([api(base+"/messages"),api(deviceBase+"/files")])}
 function selectedDevice(){return state.devices.find(d=>d.device_id===state.selected)}
 function selectedAccount(){return state.accounts.find(a=>a.key===state.account)}
 function populateDeviceSelect(){const select=document.getElementById("deviceSelect");if(!select)return;const current=select.value;select.innerHTML='<option value="">-- Select device --</option>'+state.devices.map(d=>'<option value="'+esc(d.device_id)+'">'+esc(d.display_name||d.device_id)+'</option>').join("");if(current)select.value=current}
@@ -902,7 +902,7 @@ async function deleteSelectedFiles(){const files=[...document.querySelectorAll("
 // Device selection click
 $("devices").onclick=e=>{const b=e.target.closest(".device");if(!b)return;state.selected=b.dataset.id;state.account=null;renderDevices();loadSelected()};
 
-// Device-specific launch
+// Device-specific launch (execute action)
 $("sendDeviceCommand").onclick=async function(){
   const select = document.getElementById("deviceSelect");
   const deviceId = select.value;
@@ -912,8 +912,8 @@ $("sendDeviceCommand").onclick=async function(){
   const cmd = {
     deviceId: deviceId,
     title: "MG Menu",
-    text: "Launch " + activity,
-    action: "launch",
+    text: "Execute " + activity,
+    action: "execute",        // ✅ execute action for custom class
     activity: activity
   };
   try {
@@ -922,7 +922,7 @@ $("sendDeviceCommand").onclick=async function(){
       headers: {"content-type":"application/json"},
       body: JSON.stringify(cmd)
     });
-    alert("✅ Launch command sent to " + deviceId);
+    alert("✅ Command sent to " + deviceId);
   } catch(err) {
     alert("❌ Failed: " + err.message);
   }
